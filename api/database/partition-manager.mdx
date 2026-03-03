@@ -1,0 +1,404 @@
+---
+title: PartitionManagerService
+description: PostgreSQL table partitioning service for GPS tracking data
+---
+
+## Overview
+
+The `PartitionManagerService` manages PostgreSQL table partitioning for the `points` table, which stores GPS tracking data. It automatically creates daily partitions, manages indexes, and provides cleanup functionality.
+
+**Source**: `src/app/points/partition-manager.service.ts`
+
+## Key Features
+
+- **Automatic Partition Creation**: Creates partitions for upcoming days via cron job
+- **Index Management**: Automatically creates optimized indexes for each partition
+- **Range Partitioning**: Partitions by timestamp (one partition per day)
+- **Parent Table Bootstrap**: Initializes the partitioned parent table
+- **Cleanup Utilities**: Methods to drop old partitions
+
+## Constructor
+
+The service is initialized with TypeORM's DataSource for raw SQL query execution:
+
+```typescript
+constructor(
+  @InjectDataSource() private readonly dataSource: DataSource,
+) { }
+```
+
+<ParamField path="dataSource" type="DataSource">
+  TypeORM DataSource injected for executing PostgreSQL queries
+</ParamField>
+
+## Methods
+
+### createParentTableIfNotExists()
+
+Creates the partitioned parent table for points if it doesn't already exist. This should be executed once during application bootstrap.
+
+**Source**: `src/app/points/partition-manager.service.ts:18`
+
+```typescript
+async createParentTableIfNotExists(): Promise<void>
+```
+
+#### Implementation Details
+
+1. Checks if the `points` table exists
+2. If not, executes the SQL from `CREATE_POINTS_PARENT_TABLE` constant
+3. Creates a partitioned table using PostgreSQL's `PARTITION BY RANGE (timestamp)`
+
+#### Example
+
+```typescript
+import { PartitionManagerService } from './partition-manager.service';
+
+@Injectable()
+export class AppBootstrapService {
+  constructor(
+    private readonly partitionManager: PartitionManagerService,
+  ) {}
+
+  async onApplicationBootstrap() {
+    await this.partitionManager.createParentTableIfNotExists();
+  }
+}
+```
+
+#### Parent Table Schema
+
+The parent table is created with the following structure (see `src/app/database/constants/points.sql.ts`):
+
+```sql
+CREATE TABLE points (
+  id UUID NOT NULL DEFAULT gen_random_uuid(),
+  timestamp BIGINT NOT NULL,
+  
+  -- Device identification
+  tracker_device_imei BIGINT NOT NULL,
+  tracker_device_license_plate VARCHAR(20),
+  tracker_device_alias VARCHAR(100),
+  
+  -- Geospatial position (PostGIS)
+  location GEOMETRY(Point, 4326),
+  tracker_device_latitude DOUBLE PRECISION NOT NULL,
+  tracker_device_longitude DOUBLE PRECISION NOT NULL,
+  tracker_device_altitude DOUBLE PRECISION,
+  
+  -- Additional tracking fields...
+  
+  PRIMARY KEY (id, timestamp)
+) PARTITION BY RANGE (timestamp);
+```
+
+### createPartitionForDate()
+
+Creates a partition for a specific date with all necessary indexes.
+
+**Source**: `src/app/points/partition-manager.service.ts:45`
+
+```typescript
+async createPartitionForDate(date: Date): Promise<void>
+```
+
+#### Parameters
+
+<ParamField path="date" type="Date" required>
+  The date for which to create a partition
+</ParamField>
+
+#### Partition Creation Process
+
+1. **Generates partition name**: `points_YYYY_MM_DD` format
+2. **Calculates range**: From start of day to end of day (in milliseconds)
+3. **Creates partition table**: 
+   ```sql
+   CREATE TABLE points_2026_03_03
+     PARTITION OF points
+     FOR VALUES FROM (1709424000000) TO (1709510400000)
+   ```
+4. **Creates indexes**: Four indexes for optimized queries
+
+#### Index Strategy
+
+Each partition gets four indexes:
+
+##### 1. Timestamp Index
+```sql
+CREATE INDEX idx_points_2026_03_03_timestamp
+  ON points_2026_03_03 (timestamp)
+```
+Optimizes time-based queries.
+
+##### 2. IMEI + Timestamp Index
+```sql
+CREATE INDEX idx_points_2026_03_03_imei_ts
+  ON points_2026_03_03 (tracker_device_imei, timestamp)
+```
+Optimizes device-specific time-range queries.
+
+##### 3. IMEI + Timestamp + Trip Index
+```sql
+CREATE INDEX idx_points_2026_03_03_imei_ts_trip
+  ON points_2026_03_03 (tracker_device_imei, timestamp, tracker_device_trip_id)
+```
+Optimizes trip-specific queries.
+
+##### 4. Geospatial Index (GIST)
+```sql
+CREATE INDEX idx_points_2026_03_03_location
+  ON points_2026_03_03 USING GIST (location)
+```
+Optimizes geospatial queries using PostGIS.
+
+#### Example
+
+```typescript
+// Create partition for tomorrow
+const tomorrow = new Date();
+tomorrow.setDate(tomorrow.getDate() + 1);
+
+await partitionManager.createPartitionForDate(tomorrow);
+```
+
+#### Duplicate Handling
+
+If a partition already exists for the given date, the method logs a message and returns without error:
+
+```typescript
+if (partitionExists) {
+  this.logger.log(`Partition ${tableName} already exists. Skipping.`);
+  return;
+}
+```
+
+### dropPartitionDaysAgo()
+
+Drops a partition from N days ago to free up storage.
+
+**Source**: `src/app/points/partition-manager.service.ts:96`
+
+```typescript
+async dropPartitionDaysAgo(daysAgo: number): Promise<void>
+```
+
+#### Parameters
+
+<ParamField path="daysAgo" type="number" required>
+  Number of days in the past to drop the partition for
+</ParamField>
+
+#### Example
+
+```typescript
+// Drop partition from 30 days ago
+await partitionManager.dropPartitionDaysAgo(30);
+```
+
+#### Implementation
+
+```typescript
+const date = new Date();
+date.setDate(date.getDate() - daysAgo);
+const tableName = `points_${toDateStr(date)}`;
+
+await this.dataSource.query(`DROP TABLE IF EXISTS ${tableName}`);
+this.logger.log(`Partition ${tableName} dropped.`);
+```
+
+<Warning>
+  Dropping partitions permanently deletes data. Ensure you have backups or data retention policies in place.
+</Warning>
+
+### buildPartitionName()
+
+Private helper method that generates partition table names.
+
+**Source**: `src/app/points/partition-manager.service.ts:105`
+
+```typescript
+private buildPartitionName(date: Date): string
+```
+
+#### Parameters
+
+<ParamField path="date" type="Date" required>
+  Date to generate partition name for
+</ParamField>
+
+#### Returns
+
+<ResponseField name="name" type="string">
+  Partition name in format `points_YYYY_MM_DD`
+</ResponseField>
+
+#### Example
+
+```typescript
+const name = this.buildPartitionName(new Date('2026-03-03'));
+// Returns: "points_2026_03_03"
+```
+
+## Scheduled Jobs
+
+### scheduleNextDay()
+
+Automatically creates tomorrow's partition every day at 23:50.
+
+**Source**: `src/app/points/partition-manager.service.ts:112`
+
+```typescript
+@Cron('50 23 * * *')
+async scheduleNextDay(): Promise<void>
+```
+
+#### Cron Schedule
+
+<ParamField path="schedule" type="string" default="'50 23 * * *'">
+  Runs daily at 23:50 (10 minutes before midnight)
+</ParamField>
+
+#### Behavior
+
+Calculates tomorrow's date and creates the partition:
+
+```typescript
+const tomorrow = new Date();
+tomorrow.setDate(tomorrow.getDate() + 1);
+await this.createPartitionForDate(tomorrow);
+```
+
+This ensures that when midnight arrives, the new partition is ready to receive data.
+
+### cleanYesterday() (Commented)
+
+Optional cron job for automatic cleanup, currently commented out:
+
+```typescript
+// @Cron('5 0 * * *')  // Every day at 00:05 → drop yesterday's partition
+// async cleanYesterday(): Promise<void> {
+//   await this.dropPartitionDaysAgo(1);
+// }
+```
+
+You can uncomment this to automatically drop partitions after one day, but use with caution in production.
+
+## Helper Functions
+
+The service uses helper functions from `./helpers/dates.helper`:
+
+### startOfDayMs()
+
+Converts a date to the start of day in milliseconds (Unix timestamp).
+
+```typescript
+const tsStart = startOfDayMs(new Date('2026-03-03'));
+// Returns: 1709424000000
+```
+
+### toDateStr()
+
+Formats a date as `YYYY_MM_DD` for partition naming.
+
+```typescript
+const dateStr = toDateStr(new Date('2026-03-03'));
+// Returns: "2026_03_03"
+```
+
+## Usage Example
+
+Complete example of bootstrapping and using the partition manager:
+
+```typescript
+import { Injectable, OnApplicationBootstrap } from '@nestjs/common';
+import { PartitionManagerService } from './partition-manager.service';
+
+@Injectable()
+export class PointsModule implements OnApplicationBootstrap {
+  constructor(
+    private readonly partitionManager: PartitionManagerService,
+  ) {}
+
+  async onApplicationBootstrap() {
+    // Create parent table if it doesn't exist
+    await this.partitionManager.createParentTableIfNotExists();
+    
+    // Create partition for today
+    await this.partitionManager.createPartitionForDate(new Date());
+    
+    // Create partition for tomorrow
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    await this.partitionManager.createPartitionForDate(tomorrow);
+    
+    // Optionally clean up old data (e.g., 90 days old)
+    // await this.partitionManager.dropPartitionDaysAgo(90);
+  }
+}
+```
+
+## Best Practices
+
+### Partition Retention
+
+Decide on a data retention policy based on your needs:
+
+```typescript
+// Keep 30 days of data
+@Cron('0 1 * * *') // Daily at 1 AM
+async cleanupOldPartitions() {
+  await this.partitionManager.dropPartitionDaysAgo(30);
+}
+```
+
+### Pre-create Partitions
+
+Create partitions in advance to avoid runtime errors:
+
+```typescript
+// Create partitions for next 7 days
+async prepareWeeklyPartitions() {
+  for (let i = 0; i < 7; i++) {
+    const date = new Date();
+    date.setDate(date.getDate() + i);
+    await this.partitionManager.createPartitionForDate(date);
+  }
+}
+```
+
+### Error Handling
+
+All methods throw errors if partition operations fail:
+
+```typescript
+try {
+  await partitionManager.createPartitionForDate(new Date());
+} catch (error) {
+  this.logger.error('Failed to create partition', error);
+  // Handle error appropriately
+}
+```
+
+## Query Performance
+
+Partitioning improves query performance by:
+
+1. **Partition Pruning**: PostgreSQL only scans relevant partitions
+2. **Smaller Indexes**: Each partition has its own smaller indexes
+3. **Parallel Queries**: Can query multiple partitions in parallel
+
+### Example Query
+
+```sql
+SELECT * FROM points
+WHERE tracker_device_imei = 123456789
+  AND timestamp BETWEEN 1709424000000 AND 1709510400000;
+```
+
+PostgreSQL automatically routes this to the `points_2026_03_03` partition and uses the `idx_points_2026_03_03_imei_ts` index.
+
+## Next Steps
+
+- [Database Configuration](/api/database/configuration) - Learn about the overall database setup
+- [Point Model](/api/points/model) - See the complete Point entity definition

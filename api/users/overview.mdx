@@ -1,0 +1,65 @@
+---
+title: Users API Overview
+description: User management system with MongoDB storage and DNI-based authentication
+---
+
+## Overview
+
+The Users API provides functionality for managing user data within the Walle system. User information is stored in MongoDB and supports various operations for authentication and user retrieval.
+
+## Key Features
+
+### MongoDB Storage
+
+User data is persisted in MongoDB using the Mongoose ODM. The system connects to the `DELTA_DISPATCH` database to store and retrieve user information.
+
+### DNI-Based Authentication
+
+Users are identified and authenticated using their DNI (Documento Nacional de Identidad) number. The API provides methods to find users by their DNI for authentication purposes.
+
+### User Model
+
+The User schema includes comprehensive fields for:
+
+- **Basic Information**: Name, lastname, DNI, cellphone, email
+- **Authentication**: Username, password, role, position
+- **Authorization**: Admin flags, root privileges, module permissions
+- **Profile Data**: Photo, color, full name, workgroup
+- **Application Access**: Flags for different web modules (seguridad ciudadana, catastro, rentas, inspecciones)
+- **Notifications**: Token for push notifications
+- **Incidents Tracking**: Arrays for true and false incidents
+- **Tickets**: Assignment tracking for tickets
+- **Timestamps**: Creation date, latest update, deactivation date
+
+## Common User Operations
+
+### Finding Users by DNI
+
+The most common operation is retrieving a user by their DNI number:
+
+```typescript
+const user = await userService.findOneDni(12345678);
+```
+
+This returns the complete user document if found, or `null` if no user exists with that DNI.
+
+### User Document Structure
+
+When a user is retrieved, you receive a `UserDocument` which combines the User schema with MongoDB document properties:
+
+```typescript
+interface UserDocument extends User, Document {
+  _id: ObjectId;
+  createdAt: Date;
+  updatedAt: Date;
+}
+```
+
+## Database Connection
+
+The UserService connects to MongoDB using the `DELTA_DISPATCH_DB_NAME` connection, which is configured through the DatabaseModule's dynamic module pattern.
+
+## Next Steps
+
+- [UserService Reference](/api/users/service) - Detailed API documentation for UserService methods
+- [Database Configuration](/api/database/configuration) - Learn about multi-database setup

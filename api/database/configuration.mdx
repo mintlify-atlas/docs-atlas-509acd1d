@@ -1,0 +1,261 @@
+---
+title: Database Configuration
+description: Multi-database setup with PostgreSQL and MongoDB connections
+---
+
+## Overview
+
+The Walle application uses a multi-database architecture combining PostgreSQL for relational data and MongoDB for document storage. The `DatabaseModule` provides a flexible configuration system using NestJS's dynamic module pattern.
+
+**Source**: `src/app/database/database.module.ts`
+
+## Database Technologies
+
+### PostgreSQL with TypeORM
+
+PostgreSQL is used for relational data, particularly for GPS tracking points with table partitioning. The connection is managed through TypeORM.
+
+### MongoDB with Mongoose
+
+MongoDB stores document-based data like users and application-specific records. Multiple MongoDB connections are supported for different databases:
+
+- **DELTA_DISPATCH**: Main application database
+- **AUTHSOFTWARE**: Authentication and authorization database
+
+## DatabaseModule Structure
+
+The module is decorated with `@Global()` to make database connections available throughout the application.
+
+```typescript
+@Global()
+@Module({
+  imports: [
+    TypeOrmModule.forRootAsync({
+      imports: [ConfigModule],
+      inject: [ConfigService],
+      useFactory: getPostgresDatabaseConfig,
+    })
+  ]
+})
+export class DatabaseModule { }
+```
+
+## PostgreSQL Configuration
+
+PostgreSQL connection is configured using TypeORM's async configuration pattern.
+
+**Source**: `src/app/database/config/database-postgresql.config.ts`
+
+### getPostgresDatabaseConfig()
+
+Factory function that returns TypeORM configuration using environment variables.
+
+```typescript
+export const getPostgresDatabaseConfig = (
+  configService: ConfigService,
+): TypeOrmModuleOptions => ({
+  type: 'postgres',
+  host: configService.get<string>('POSTGRES_HOST'),
+  port: configService.get<number>('POSTGRES_PORT'),
+  username: configService.get<string>('POSTGRES_USER'),
+  password: configService.get<string>('POSTGRES_PASSWORD'),
+  database: configService.get<string>('POSTGRES_DB'),
+  autoLoadEntities: true,
+  synchronize: configService.get<boolean>('POSTGRES_SYNC'),
+  logging: false,
+});
+```
+
+#### Configuration Parameters
+
+<ParamField path="type" type="'postgres'" required>
+  Database type (PostgreSQL)
+</ParamField>
+
+<ParamField path="host" type="string" required>
+  PostgreSQL server hostname (from `POSTGRES_HOST` env variable)
+</ParamField>
+
+<ParamField path="port" type="number" required>
+  PostgreSQL server port (from `POSTGRES_PORT` env variable)
+</ParamField>
+
+<ParamField path="username" type="string" required>
+  Database user (from `POSTGRES_USER` env variable)
+</ParamField>
+
+<ParamField path="password" type="string" required>
+  Database password (from `POSTGRES_PASSWORD` env variable)
+</ParamField>
+
+<ParamField path="database" type="string" required>
+  Database name (from `POSTGRES_DB` env variable)
+</ParamField>
+
+<ParamField path="autoLoadEntities" type="boolean" default="true">
+  Automatically load TypeORM entities from modules
+</ParamField>
+
+<ParamField path="synchronize" type="boolean">
+  Automatically sync database schema (from `POSTGRES_SYNC` env variable)
+  
+  <Warning>Set to `false` in production to prevent data loss</Warning>
+</ParamField>
+
+<ParamField path="logging" type="boolean" default="false">
+  Enable SQL query logging
+</ParamField>
+
+### Environment Variables
+
+Required environment variables for PostgreSQL:
+
+```bash
+POSTGRES_HOST=localhost
+POSTGRES_PORT=5432
+POSTGRES_USER=your_username
+POSTGRES_PASSWORD=your_password
+POSTGRES_DB=walle_db
+POSTGRES_SYNC=false
+```
+
+## MongoDB Connections
+
+The DatabaseModule provides factory methods for creating named MongoDB connections using Mongoose.
+
+### forDeltaDispatchApplication()
+
+Creates a MongoDB connection for the main Delta Dispatch application database.
+
+```typescript
+static forDeltaDispatchApplication(_uri: string): DynamicModule {
+  return {
+    module: DatabaseModule,
+    imports: [MongooseModule.forRoot(_uri, { 
+      connectionName: DELTA_DISPATCH_DB_NAME 
+    })],
+    exports: [MongooseModule]
+  }
+}
+```
+
+#### Parameters
+
+<ParamField path="_uri" type="string" required>
+  MongoDB connection URI (e.g., `mongodb://localhost:27017/delta_dispatch`)
+</ParamField>
+
+#### Returns
+
+<ResponseField name="module" type="DynamicModule">
+  A dynamic module with the configured MongoDB connection exported
+</ResponseField>
+
+#### Usage Example
+
+```typescript
+import { Module } from '@nestjs/common';
+import { DatabaseModule } from './database/database.module';
+
+@Module({
+  imports: [
+    DatabaseModule,
+    DatabaseModule.forDeltaDispatchApplication(
+      process.env.MONGO_DELTA_DISPATCH_URI
+    ),
+  ],
+})
+export class AppModule {}
+```
+
+### forAuthSoftwareApplication()
+
+Creates a MongoDB connection for the authentication software database.
+
+```typescript
+static forAuthSoftwareApplication(_uri: string): DynamicModule {
+  return {
+    module: DatabaseModule,
+    imports: [MongooseModule.forRoot(_uri, { 
+      connectionName: AUTHSOFTWARE_SERVER_DB_NAME 
+    })],
+    exports: [MongooseModule]
+  }
+}
+```
+
+#### Parameters
+
+<ParamField path="_uri" type="string" required>
+  MongoDB connection URI for the auth database
+</ParamField>
+
+#### Usage Example
+
+```typescript
+@Module({
+  imports: [
+    DatabaseModule,
+    DatabaseModule.forAuthSoftwareApplication(
+      process.env.MONGO_AUTH_URI
+    ),
+  ],
+})
+export class AppModule {}
+```
+
+## Using Named Connections
+
+When injecting models from named MongoDB connections, specify the connection name:
+
+```typescript
+import { Injectable } from '@nestjs/common';
+import { InjectModel } from '@nestjs/mongoose';
+import { Model } from 'mongoose';
+import { DELTA_DISPATCH_DB_NAME } from 'src/common/constants/database.constant';
+
+@Injectable()
+export class UserService {
+  constructor(
+    @InjectModel(User.name, DELTA_DISPATCH_DB_NAME)
+    private readonly userModel: Model<UserDocument>,
+  ) {}
+}
+```
+
+## Dynamic Module Pattern
+
+The DatabaseModule uses NestJS's dynamic module pattern to provide flexible database configuration:
+
+1. **Static Imports**: PostgreSQL is configured once globally
+2. **Factory Methods**: MongoDB connections are created on-demand with custom URIs
+3. **Named Connections**: Multiple MongoDB databases can coexist
+
+## Crypto Polyfill
+
+For Node.js v18 compatibility, the module includes a crypto polyfill:
+
+```typescript
+import * as crypto from 'crypto';
+
+if (typeof (globalThis as any).crypto === 'undefined') {
+  (globalThis as any).crypto = crypto;
+}
+```
+
+This ensures TypeORM works correctly with newer Node.js versions.
+
+## Connection Constants
+
+Database connection names are defined in constants:
+
+```typescript
+// src/common/constants/database.constant.ts
+export const DELTA_DISPATCH_DB_NAME = 'DELTA_DISPATCH';
+export const AUTHSOFTWARE_SERVER_DB_NAME = 'AUTHSOFTWARE_SERVER';
+```
+
+## Next Steps
+
+- [Partition Manager](/api/database/partition-manager) - Learn about PostgreSQL table partitioning
+- [UserService](/api/users/service) - See how services use MongoDB connections

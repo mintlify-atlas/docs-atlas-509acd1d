@@ -1,0 +1,370 @@
+---
+title: 'Point Data Model'
+description: 'Complete reference for the Point entity schema'
+---
+
+## Overview
+
+The `Point` entity represents a single AVL telemetry reading from a vehicle tracking device. It contains 50+ attributes covering geospatial data, movement metrics, hardware status, and contextual information.
+
+### Table Configuration
+
+```typescript
+@Entity({ name: 'points', synchronize: false })
+```
+
+- **Table name**: `points`
+- **Synchronize**: `false` (schema managed manually)
+- **Partitioning**: RANGE partitioned by `timestamp`
+
+## Composite Primary Key
+
+<Warning>
+  PostgreSQL requires the partition key (`timestamp`) to be part of the primary key in RANGE partitioned tables. This ensures uniqueness across partitions.
+</Warning>
+
+<ResponseField name="id" type="string (uuid)" required>
+  Unique identifier for the point. Auto-generated using `gen_random_uuid()`.
+</ResponseField>
+
+<ResponseField name="timestamp" type="number (bigint)" required>
+  Unix timestamp in milliseconds when the telemetry point was captured. Used as the partition key.
+</ResponseField>
+
+## Device Identification
+
+<ResponseField name="trackerDeviceImei" type="number (bigint)" required>
+  IMEI (International Mobile Equipment Identity) number of the tracking device.
+</ResponseField>
+
+<ResponseField name="trackerDeviceLicensePlate" type="string" maxLength="20">
+  License plate number of the vehicle equipped with this tracker.
+</ResponseField>
+
+<ResponseField name="trackerDeviceAlias" type="string" maxLength="100">
+  Human-friendly alias or name for the tracked vehicle (e.g., "Truck 42", "Patrol Unit Alpha").
+</ResponseField>
+
+## Geospatial Data
+
+### PostGIS Geometry
+
+<ResponseField name="location" type="geometry(Point, 4326)">
+  PostGIS POINT geometry representing the vehicle location. Uses SRID 4326 (WGS 84).
+  
+  **Usage example:**
+  ```sql
+  -- Find points within 500m of a location
+  SELECT * FROM points
+  WHERE ST_DWithin(
+    location::geography,
+    ST_MakePoint(-99.1332, 19.4326)::geography,
+    500
+  );
+  ```
+</ResponseField>
+
+### Coordinate Components
+
+<ResponseField name="trackerDeviceLatitude" type="number (double precision)" required>
+  Latitude in decimal degrees (WGS 84). Range: -90 to 90.
+</ResponseField>
+
+<ResponseField name="trackerDeviceLongitude" type="number (double precision)" required>
+  Longitude in decimal degrees (WGS 84). Range: -180 to 180.
+</ResponseField>
+
+<ResponseField name="trackerDeviceAltitude" type="number (double precision)">
+  Altitude in meters above sea level.
+</ResponseField>
+
+## Movement & Speed
+
+<ResponseField name="trackerDeviceAngle" type="number (smallint)">
+  Vehicle heading/bearing in degrees. Range: 0-360, where 0 is North, 90 is East, 180 is South, 270 is West.
+</ResponseField>
+
+<ResponseField name="trackerDeviceSpeedMs" type="number (real)" default="0">
+  Current speed in meters per second.
+</ResponseField>
+
+<ResponseField name="trackerDeviceSpeedKh" type="number (real)" default="0">
+  Current speed in kilometers per hour.
+</ResponseField>
+
+<ResponseField name="trackerDeviceMovement" type="boolean" default="false">
+  Whether the vehicle is currently moving. Typically `true` when speed exceeds a threshold (e.g., 5 km/h).
+</ResponseField>
+
+<ResponseField name="trackerDeviceIgnition" type="boolean" default="false">
+  Engine ignition status. `true` when the engine is on.
+</ResponseField>
+
+## Distance Tracking
+
+<ResponseField name="trackerDeviceDistance" type="number (double precision)" default="0">
+  Distance traveled since the last point, in meters.
+</ResponseField>
+
+<ResponseField name="trackerDeviceTotalDistance" type="number (double precision)" default="0">
+  Cumulative total distance traveled by the vehicle, in meters. This odometer value persists across device resets.
+</ResponseField>
+
+## Daily Kilometer Metrics
+
+<ResponseField name="trackerDeviceKmDay" type="number (real)" default="0">
+  Total kilometers traveled today (resets at midnight).
+</ResponseField>
+
+<ResponseField name="trackerDeviceJurisdictionKmDay" type="number (real)" default="0">
+  Kilometers traveled today within jurisdiction boundaries.
+</ResponseField>
+
+<ResponseField name="trackerDeviceNoJurisdictionKmDay" type="number (real)" default="0">
+  Kilometers traveled today outside jurisdiction boundaries.
+</ResponseField>
+
+## Time Tracking (in seconds)
+
+### Driving Time
+
+<ResponseField name="trackerDeviceDrivingTimeInJurisdiction" type="number (integer)" default="0">
+  Total seconds spent driving within jurisdiction boundaries today.
+</ResponseField>
+
+<ResponseField name="trackerDeviceDrivingTimeOutOfJurisdiction" type="number (integer)" default="0">
+  Total seconds spent driving outside jurisdiction boundaries today.
+</ResponseField>
+
+### Parking Time
+
+<ResponseField name="trackerDeviceParkingTimeInJurisdiction" type="number (integer)" default="0">
+  Total seconds spent parked (ignition off) within jurisdiction today.
+</ResponseField>
+
+<ResponseField name="trackerDeviceParkingTimeOutOfJurisdiction" type="number (integer)" default="0">
+  Total seconds spent parked outside jurisdiction today.
+</ResponseField>
+
+<ResponseField name="trackerDeviceTacticalParking" type="number (integer)" default="0">
+  Total seconds spent in tactical parking mode (stopped with ignition on).
+</ResponseField>
+
+## Engine Hours
+
+<ResponseField name="trackerDeviceEngineHours" type="number (real)" default="0">
+  Engine hours accumulated today, in hours.
+</ResponseField>
+
+<ResponseField name="trackerDeviceTotalEngineHours" type="number (real)" default="0">
+  Total cumulative engine hours since device installation.
+</ResponseField>
+
+<ResponseField name="trackerDeviceEngineHoursBasedOnIgnition" type="number (real)" default="0">
+  Engine hours calculated based on ignition state (may differ from ECU-reported hours).
+</ResponseField>
+
+<ResponseField name="trackerDeviceEngineHoursBasedOnIgnitionAndStopped" type="number (real)" default="0">
+  Engine hours when vehicle is stopped with ignition on (idle time).
+</ResponseField>
+
+## Hardware & Network Status
+
+### Signal & Battery
+
+<ResponseField name="trackerDeviceGsmSignal" type="number (smallint)">
+  GSM signal strength (typically 0-31, where higher is better). 99 indicates no signal.
+</ResponseField>
+
+<ResponseField name="trackerDeviceBattery" type="number (smallint)">
+  Device battery level as a percentage (0-100), or voltage in millivolts depending on device.
+</ResponseField>
+
+<ResponseField name="trackerDeviceBatteryCurrentAmps" type="number (real)">
+  Current battery draw in amperes. Positive values indicate charging, negative indicate discharging.
+</ResponseField>
+
+### Device State
+
+<ResponseField name="trackerDeviceStatus" type="number (smallint)">
+  Device status code. Interpretation varies by tracker manufacturer.
+</ResponseField>
+
+<ResponseField name="trackerDeviceDataMode" type="number (smallint)">
+  Data transmission mode (e.g., 0 = Home On Stop, 1 = Home On Moving, 2 = Roaming).
+</ResponseField>
+
+<ResponseField name="trackerDeviceNetworkType" type="number (smallint)">
+  Mobile network type: 0 = GSM, 1 = UMTS, 2 = LTE, etc.
+</ResponseField>
+
+### Cellular Network Info
+
+<ResponseField name="trackerDeviceGsmAreaCode" type="number (integer)">
+  Location Area Code (LAC) from the GSM/LTE network.
+</ResponseField>
+
+<ResponseField name="trackerDeviceActiveGsmOperator" type="number (bigint)">
+  Mobile Country Code + Mobile Network Code (MCC+MNC) of the active operator.
+</ResponseField>
+
+<ResponseField name="trackerDeviceCellId" type="number (integer)">
+  Cell tower ID the device is currently connected to.
+</ResponseField>
+
+### Protocol Info
+
+<ResponseField name="trackerDevicePacketId" type="number (smallint)">
+  Sequential packet ID for tracking data integrity.
+</ResponseField>
+
+<ResponseField name="trackerDeviceCodecId" type="number (smallint)">
+  Protocol codec identifier (e.g., Codec 8, Codec 16 for Teltonika devices).
+</ResponseField>
+
+## GNSS Quality
+
+<ResponseField name="trackerAccuracy" type="number (smallint)">
+  GPS accuracy/precision in meters. Lower values indicate better accuracy.
+</ResponseField>
+
+<ResponseField name="trackerDeviceGnssState" type="number (smallint)">
+  GNSS fix state: 0 = No fix, 1 = 2D fix, 2 = 3D fix.
+</ResponseField>
+
+<ResponseField name="trackerDeviceNumberOfSatellites" type="number (smallint)">
+  Number of satellites used for the GNSS fix. More satellites generally means better accuracy.
+</ResponseField>
+
+<ResponseField name="trackerDeviceGnssPdop" type="number (real)">
+  Position Dilution of Precision. Values < 5 are good, > 10 indicate poor geometry.
+</ResponseField>
+
+<ResponseField name="trackerDeviceGnssHdop" type="number (real)">
+  Horizontal Dilution of Precision. Lower values indicate better horizontal accuracy.
+</ResponseField>
+
+## Geocoding & Administrative Zones
+
+<ResponseField name="trackerDeviceGeocode" type="string (text)">
+  Reverse-geocoded address or location name (e.g., "Av. Insurgentes Sur 1602, CDMX").
+</ResponseField>
+
+<ResponseField name="trackerDeviceIdMunicipality" type="string (uuid)">
+  UUID of the municipality where this point is located.
+</ResponseField>
+
+<ResponseField name="trackerPlotUuid" type="string (uuid)">
+  UUID of the plot/parcel where this point is located.
+</ResponseField>
+
+## Geofences & Sectors
+
+### Boolean Flags
+
+<ResponseField name="trackerDeviceInsideGeofence" type="boolean" default="false">
+  Whether the point is inside any assigned geofence.
+</ResponseField>
+
+<ResponseField name="trackerDeviceInsideQuadrant" type="boolean" default="false">
+  Whether the point is inside an assigned quadrant.
+</ResponseField>
+
+<ResponseField name="trackerDeviceInsideSector" type="boolean" default="false">
+  Whether the point is inside the vehicle's assigned sector.
+</ResponseField>
+
+<ResponseField name="trackerDeviceInsideAnySector" type="boolean" default="false">
+  Whether the point is inside any sector (not necessarily the assigned one).
+</ResponseField>
+
+### Sector Details
+
+<ResponseField name="trackerDeviceInsideAnySectorName" type="string" maxLength="100">
+  Name of the sector the vehicle is currently inside (if any).
+</ResponseField>
+
+<ResponseField name="trackerDeviceInsideAnySectorId" type="string (uuid)">
+  UUID of the sector the vehicle is currently inside.
+</ResponseField>
+
+### Quadrant Information
+
+<ResponseField name="trackerDeviceQuadrant" type="object (jsonb)">
+  JSONB object containing quadrant details when the vehicle is inside a quadrant.
+  
+  <Expandable title="Quadrant Object Schema">
+    <ResponseField name="quadrant_id" type="string">
+      Unique identifier of the quadrant
+    </ResponseField>
+    
+    <ResponseField name="quadrant_name" type="string">
+      Display name of the quadrant (e.g., "Quadrant A-5", "Downtown Sector")
+    </ResponseField>
+  </Expandable>
+  
+  **Example:**
+  ```json
+  {
+    "quadrant_id": "q_norte_12",
+    "quadrant_name": "Norte Sector 12"
+  }
+  ```
+</ResponseField>
+
+## Trip & Alerts
+
+<ResponseField name="trackerDeviceTripId" type="number (integer)">
+  Identifier of the current trip. A trip typically starts when ignition turns on and ends when it turns off.
+</ResponseField>
+
+<ResponseField name="trackerDeviceAlarm" type="string" maxLength="100">
+  Active alarm/alert type (e.g., "SPEEDING", "HARSH_BRAKING", "GEOFENCE_EXIT", "POWER_CUT").
+</ResponseField>
+
+## Fuel Consumption
+
+<ResponseField name="trackerDeviceGallonsPerKm" type="number (real)">
+  Fuel efficiency in gallons per kilometer.
+</ResponseField>
+
+<ResponseField name="trackerDeviceFuelConsumedPerDay" type="number (real)">
+  Total fuel consumed today in gallons.
+</ResponseField>
+
+## Timestamps
+
+<ResponseField name="trackerDeviceShippingDate" type="Date (timestamptz)">
+  When the telemetry data was transmitted from the device to the server.
+</ResponseField>
+
+<ResponseField name="createdAt" type="Date (timestamptz)">
+  When this record was inserted into the database. Auto-populated by TypeORM.
+</ResponseField>
+
+<ResponseField name="updatedAt" type="Date (timestamptz)">
+  When this record was last updated. Auto-populated by TypeORM on every update.
+</ResponseField>
+
+## Usage Example
+
+```typescript
+import { Point } from './model/point.model';
+import { Repository } from 'typeorm';
+
+// Query recent points for a specific vehicle
+const recentPoints = await pointsRepository.find({
+  where: {
+    trackerDeviceImei: 123456789012345,
+    timestamp: MoreThan(Date.now() - 3600000) // Last hour
+  },
+  order: { timestamp: 'DESC' },
+  take: 100
+});
+
+// Access geospatial data
+const point = recentPoints[0];
+console.log(`Vehicle at ${point.trackerDeviceLatitude}, ${point.trackerDeviceLongitude}`);
+console.log(`Speed: ${point.trackerDeviceSpeedKh} km/h`);
+console.log(`Inside quadrant: ${point.trackerDeviceQuadrant?.quadrant_name}`);
+```

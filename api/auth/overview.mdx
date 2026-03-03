@@ -1,0 +1,177 @@
+---
+title: 'Authentication Overview'
+description: 'JWT-based authentication for Walle AVL API'
+---
+
+## Authentication Flow
+
+Walle uses JWT (JSON Web Token) authentication with Passport.js for securing API endpoints. The authentication system validates users against a MongoDB database and issues tokens valid for 8 hours.
+
+### Authentication Process
+
+1. Client sends login credentials (username/password or DNI)
+2. Server validates credentials against user database
+3. Server issues JWT token valid for 8 hours
+4. Client includes token in subsequent requests via Bearer authentication
+5. Server validates token and retrieves user data on each request
+
+## Login Endpoint
+
+### POST /auth/login
+
+Authenticates a user and returns a JWT access token.
+
+<ParamField body="user_dni" type="number" required>
+  User's DNI (Document National de Identidad) used for authentication
+</ParamField>
+
+<ParamField body="user_password" type="string" required>
+  User's password
+</ParamField>
+
+#### Request Example
+
+```json
+{
+  "user_dni": 12345678,
+  "user_password": "your_password"
+}
+```
+
+#### Response
+
+<ResponseField name="access_token" type="string">
+  JWT token to be used for authenticated requests. Valid for 8 hours.
+</ResponseField>
+
+<ResponseField name="user" type="object">
+  User object containing profile information
+  
+  <ResponseField name="user_dni" type="number">
+    User's DNI
+  </ResponseField>
+  
+  <ResponseField name="user_name" type="string">
+    User's first name
+  </ResponseField>
+  
+  <ResponseField name="user_lastname" type="string">
+    User's last name
+  </ResponseField>
+  
+  <ResponseField name="user_email" type="string">
+    User's email address
+  </ResponseField>
+  
+  <ResponseField name="user_role" type="string">
+    User's role (default: "Operador")
+  </ResponseField>
+  
+  <ResponseField name="user_position" type="string">
+    User's position (default: "Empleado")
+  </ResponseField>
+</ResponseField>
+
+#### Success Response Example
+
+```json
+{
+  "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "user": {
+    "user_dni": 12345678,
+    "user_name": "Juan",
+    "user_lastname": "Pérez",
+    "user_email": "juan.perez@example.com",
+    "user_role": "Operador",
+    "user_position": "Empleado",
+    "user_state": true
+  }
+}
+```
+
+## Using JWT Tokens
+
+Once authenticated, include the JWT token in the `Authorization` header of subsequent requests:
+
+```bash
+Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+```
+
+### Example Authenticated Request
+
+```bash
+curl -X GET https://api.walle.com/points \
+  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+```
+
+### Using the @Auth() Decorator
+
+Protected endpoints in Walle use the `@Auth()` decorator from `src/common/decorators/auth.decorator.ts:4`:
+
+```typescript
+import { Auth } from 'src/common/decorators';
+
+@Controller('protected')
+export class ProtectedController {
+  @Get()
+  @Auth()  // Requires JWT authentication
+  getProtectedData() {
+    return { message: 'This is protected data' };
+  }
+}
+```
+
+## Error Responses
+
+### 401 Unauthorized
+
+Returned when authentication fails or token is invalid/missing.
+
+```json
+{
+  "statusCode": 401,
+  "message": "Unathorized!",
+  "error": "Unauthorized"
+}
+```
+
+**Common causes:**
+- Missing or malformed Authorization header
+- Expired JWT token (>8 hours old)
+- Invalid token signature
+- User not found in database
+- Token payload missing `user_dni` field
+
+### 400 Bad Request
+
+Returned when login credentials are invalid or missing.
+
+```json
+{
+  "statusCode": 400,
+  "message": "Invalid credentials",
+  "error": "Bad Request"
+}
+```
+
+## Token Configuration
+
+JWT tokens are configured in `src/app/auth/auth.module.ts:12-19` with:
+
+- **Secret Key**: Loaded from `JWT_SECRET` environment variable
+- **Expiration**: 8 hours (`expiresIn: '8h'`)
+- **Algorithm**: HS256 (default)
+
+### Environment Variables
+
+<ParamField path="JWT_SECRET" type="string" required>
+  Secret key used to sign and verify JWT tokens. Must be set in environment configuration.
+</ParamField>
+
+## Security Considerations
+
+- Store JWT tokens securely (e.g., httpOnly cookies or secure storage)
+- Never expose JWT_SECRET in client-side code
+- Tokens expire after 8 hours - implement token refresh logic
+- HTTPS is required for production deployments
+- User lookup is performed on every authenticated request by DNI

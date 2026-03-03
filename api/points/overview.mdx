@@ -1,0 +1,107 @@
+---
+title: 'Points API Overview'
+description: 'Query and manage vehicle AVL telemetry points'
+---
+
+## What are Points?
+
+Points represent individual AVL (Automatic Vehicle Location) telemetry data points captured from vehicle tracking devices. Each point contains comprehensive information about a vehicle's state at a specific moment in time, including:
+
+- **Geospatial data**: GPS coordinates, altitude, and PostGIS geometry
+- **Movement metrics**: Speed, angle, distance traveled
+- **Time tracking**: Driving time, parking time, engine hours
+- **Device status**: Battery, signal strength, network information
+- **Contextual data**: Geofences, quadrants, sectors, geocoding
+
+## Storage Architecture
+
+Points are stored in partitioned PostgreSQL tables using **RANGE partitioning by timestamp**. This enables efficient time-series queries and automatic data lifecycle management.
+
+Key characteristics:
+- **Composite primary key**: `(id, timestamp)` - required for partitioned tables
+- **PostGIS enabled**: Spatial queries using the `location` geometry column
+- **High-volume ingestion**: Optimized for continuous telemetry data streams
+
+## Typical Endpoints
+
+The Points API follows standard REST patterns:
+
+```
+GET    /points              # List points with filters
+GET    /points/:id          # Get specific point
+POST   /points              # Create new point(s)
+PATCH  /points/:id          # Update point
+DELETE /points/:id          # Delete point
+```
+
+## Time-Series Query Patterns
+
+### Query by Time Range
+
+Most queries filter by timestamp to leverage table partitioning:
+
+```typescript
+const points = await pointsRepository.find({
+  where: {
+    timestamp: Between(startTime, endTime),
+    trackerDeviceImei: deviceImei
+  },
+  order: { timestamp: 'ASC' }
+});
+```
+
+### Spatial Queries
+
+Use PostGIS functions for geospatial filtering:
+
+```sql
+SELECT * FROM points
+WHERE ST_DWithin(
+  location::geography,
+  ST_MakePoint(-99.1332, 19.4326)::geography,
+  1000  -- meters
+)
+AND timestamp >= NOW() - INTERVAL '1 day';
+```
+
+### Aggregation Queries
+
+Calculate metrics over time windows:
+
+```typescript
+// Total distance by vehicle per day
+const dailyDistance = await pointsRepository
+  .createQueryBuilder('point')
+  .select('DATE(to_timestamp(timestamp / 1000))', 'date')
+  .addSelect('tracker_device_imei', 'imei')
+  .addSelect('MAX(tracker_device_total_distance)', 'total_distance')
+  .where('timestamp >= :start', { start: startTimestamp })
+  .groupBy('date, tracker_device_imei')
+  .getRawMany();
+```
+
+## Authentication
+
+All Points API endpoints require authentication. Include a valid JWT token in the Authorization header:
+
+```
+Authorization: Bearer <your-jwt-token>
+```
+
+## Rate Limits
+
+To ensure system stability:
+- **Read operations**: 100 requests/minute
+- **Write operations**: 50 requests/minute
+- **Bulk ingestion**: Contact your administrator for higher limits
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Data Model" icon="database" href="/api/points/model">
+    Complete Point entity field reference
+  </Card>
+  <Card title="Service API" icon="code" href="/api/points/service">
+    PointsService methods and usage
+  </Card>
+</CardGroup>

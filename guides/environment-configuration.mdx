@@ -1,0 +1,475 @@
+---
+title: 'Environment Configuration'
+description: 'Complete guide to configuring environment variables for Walle'
+---
+
+## Overview
+
+Walle uses environment variables for configuration across different deployment environments. All configuration is managed through a `.env` file in the project root, loaded by `@nestjs/config` in `src/app.module.ts:12`.
+
+## Required Environment Variables
+
+### PostgreSQL Configuration
+
+PostgreSQL is used for storing telemetry points with table partitioning.
+
+```bash .env
+# PostgreSQL Connection
+POSTGRES_HOST=localhost
+POSTGRES_PORT=5432
+POSTGRES_USER=ngynx
+POSTGRES_PASSWORD=ngynx
+POSTGRES_DB=walledb
+POSTGRES_SYNC=false
+```
+
+<ParamField path="POSTGRES_HOST" type="string" required>
+  PostgreSQL server hostname or IP address. Use `localhost` for local development.
+</ParamField>
+
+<ParamField path="POSTGRES_PORT" type="number" default="5432">
+  PostgreSQL server port. Default is 5432.
+</ParamField>
+
+<ParamField path="POSTGRES_USER" type="string" required>
+  Database user with full privileges on the target database.
+</ParamField>
+
+<ParamField path="POSTGRES_PASSWORD" type="string" required>
+  Password for the PostgreSQL user.
+</ParamField>
+
+<ParamField path="POSTGRES_DB" type="string" required>
+  Target database name. Must have PostGIS extension enabled.
+</ParamField>
+
+<ParamField path="POSTGRES_SYNC" type="boolean" default="false">
+  TypeORM synchronization setting. **Must be `false`** to allow manual partition management. Set in `src/app/database/config/database-postgresql.config.ts:16`.
+</ParamField>
+
+<Warning>
+  **Never set `POSTGRES_SYNC=true` in production.** This can cause data loss when TypeORM attempts to synchronize the partitioned table structure.
+</Warning>
+
+### MongoDB Configuration
+
+Walle connects to two separate MongoDB databases for different purposes.
+
+```bash .env
+# MongoDB Connections
+MONGO_DELTA_DISPATCH_URI=mongodb://localhost:27017/deltaDispatch
+MONGO_AUTHSOFTWARE_URI=mongodb://localhost:27017/authSoftware
+```
+
+<ParamField path="MONGO_DELTA_DISPATCH_URI" type="string" required>
+  MongoDB connection URI for the Delta Dispatch database. Used for dispatch-related data.
+  
+  Configured in `src/app.module.ts:32` with connection name `deltaDispatch`.
+</ParamField>
+
+<ParamField path="MONGO_AUTHSOFTWARE_URI" type="string" required>
+  MongoDB connection URI for the Auth Software database. Used for user authentication and management.
+  
+  Configured in `src/app.module.ts:33` with connection name `authSoftware`.
+</ParamField>
+
+### Authentication Configuration
+
+```bash .env
+# JWT Authentication
+JWT_SECRET=your-super-secret-jwt-key-change-this-in-production
+```
+
+<ParamField path="JWT_SECRET" type="string" required>
+  Secret key for signing and verifying JWT tokens. Used in `src/app/auth/strategies/jwt.strategy.ts:18`.
+  
+  **Security Requirements**:
+  - Minimum 32 characters
+  - Use cryptographically secure random string
+  - Never commit to version control
+  - Rotate periodically in production
+</ParamField>
+
+<Tip>
+  Generate a secure JWT secret:
+  ```bash
+  node -e "console.log(require('crypto').randomBytes(64).toString('hex'))"
+  ```
+</Tip>
+
+### Application Configuration
+
+```bash .env
+# Application Settings
+PORT=3700
+NODE_ENV=development
+```
+
+<ParamField path="PORT" type="number" default="3700">
+  HTTP server port. The application listens on this port, configured in `src/main.ts:17`.
+</ParamField>
+
+<ParamField path="NODE_ENV" type="string" default="development">
+  Application environment. Common values: `development`, `production`, `staging`.
+</ParamField>
+
+## Connection String Formats
+
+### PostgreSQL Connection String
+
+While Walle uses individual environment variables for PostgreSQL, the equivalent connection string format is:
+
+```
+postgresql://[user]:[password]@[host]:[port]/[database]
+```
+
+**Example**:
+```
+postgresql://ngynx:ngynx@localhost:5432/walledb
+```
+
+### MongoDB Connection Strings
+
+<CodeGroup>
+```bash Local MongoDB
+mongodb://localhost:27017/deltaDispatch
+mongodb://localhost:27017/authSoftware
+```
+
+```bash MongoDB with Authentication
+mongodb://username:password@localhost:27017/deltaDispatch?authSource=admin
+mongodb://username:password@localhost:27017/authSoftware?authSource=admin
+```
+
+```bash MongoDB Atlas
+mongodb+srv://username:password@cluster0.xxxxx.mongodb.net/deltaDispatch?retryWrites=true&w=majority
+mongodb+srv://username:password@cluster0.xxxxx.mongodb.net/authSoftware?retryWrites=true&w=majority
+```
+
+```bash MongoDB Replica Set
+mongodb://host1:27017,host2:27017,host3:27017/deltaDispatch?replicaSet=rs0
+```
+</CodeGroup>
+
+## Environment-Specific Configurations
+
+### Development Environment
+
+```bash .env.development
+# PostgreSQL - Local
+POSTGRES_HOST=localhost
+POSTGRES_PORT=5432
+POSTGRES_USER=ngynx
+POSTGRES_PASSWORD=ngynx
+POSTGRES_DB=walledb
+POSTGRES_SYNC=false
+
+# MongoDB - Local
+MONGO_DELTA_DISPATCH_URI=mongodb://localhost:27017/deltaDispatch
+MONGO_AUTHSOFTWARE_URI=mongodb://localhost:27017/authSoftware
+
+# Auth - Development secret
+JWT_SECRET=dev-secret-key-not-for-production
+
+# App
+PORT=3700
+NODE_ENV=development
+```
+
+### Staging Environment
+
+```bash .env.staging
+# PostgreSQL - Staging Server
+POSTGRES_HOST=staging-db.example.com
+POSTGRES_PORT=5432
+POSTGRES_USER=walle_staging
+POSTGRES_PASSWORD=${STAGING_DB_PASSWORD}
+POSTGRES_DB=walledb_staging
+POSTGRES_SYNC=false
+
+# MongoDB - Atlas Staging Cluster
+MONGO_DELTA_DISPATCH_URI=${STAGING_MONGO_DELTA_URI}
+MONGO_AUTHSOFTWARE_URI=${STAGING_MONGO_AUTH_URI}
+
+# Auth - Staging secret
+JWT_SECRET=${STAGING_JWT_SECRET}
+
+# App
+PORT=3700
+NODE_ENV=staging
+```
+
+### Production Environment
+
+```bash .env.production
+# PostgreSQL - Production RDS/Managed Instance
+POSTGRES_HOST=prod-db.xxxxx.rds.amazonaws.com
+POSTGRES_PORT=5432
+POSTGRES_USER=walle_prod
+POSTGRES_PASSWORD=${PROD_DB_PASSWORD}
+POSTGRES_DB=walledb
+POSTGRES_SYNC=false
+
+# MongoDB - Atlas Production Cluster
+MONGO_DELTA_DISPATCH_URI=${PROD_MONGO_DELTA_URI}
+MONGO_AUTHSOFTWARE_URI=${PROD_MONGO_AUTH_URI}
+
+# Auth - Production secret (rotate quarterly)
+JWT_SECRET=${PROD_JWT_SECRET}
+
+# App
+PORT=3700
+NODE_ENV=production
+```
+
+<Note>
+  In production, use environment variable substitution (`${VAR_NAME}`) to inject secrets from your deployment platform (AWS Secrets Manager, Docker secrets, Kubernetes secrets, etc.).
+</Note>
+
+## Security Best Practices
+
+<AccordionGroup>
+  <Accordion title="Never Commit Secrets">
+    Add `.env` to `.gitignore` to prevent committing secrets:
+    
+    ```bash .gitignore
+    # Environment variables
+    .env
+    .env.local
+    .env.*.local
+    .env.production
+    ```
+    
+    Commit only example files:
+    ```bash .env.example
+    POSTGRES_HOST=localhost
+    POSTGRES_PORT=5432
+    POSTGRES_USER=your_user
+    POSTGRES_PASSWORD=your_password
+    # ... (without actual values)
+    ```
+  </Accordion>
+
+  <Accordion title="Use Strong Credentials">
+    **PostgreSQL**:
+    - Use strong passwords (minimum 16 characters)
+    - Create dedicated database users with minimal privileges
+    - Enable SSL/TLS for connections in production
+    
+    **MongoDB**:
+    - Enable authentication (`--auth`)
+    - Use role-based access control (RBAC)
+    - Enable encryption at rest and in transit
+    
+    **JWT**:
+    - Use minimum 256-bit secrets (32+ characters)
+    - Rotate secrets periodically
+    - Use different secrets per environment
+  </Accordion>
+
+  <Accordion title="Secure Connection Strings">
+    **PostgreSQL SSL**:
+    ```bash
+    POSTGRES_HOST=db.example.com
+    POSTGRES_SSL=true
+    POSTGRES_SSL_REJECT_UNAUTHORIZED=true
+    ```
+    
+    **MongoDB TLS**:
+    ```bash
+    mongodb://user:pass@host:27017/db?ssl=true&tlsAllowInvalidCertificates=false
+    ```
+  </Accordion>
+
+  <Accordion title="Network Security">
+    - Use VPC/private networks for database access
+    - Implement IP whitelisting on database servers
+    - Enable firewall rules to restrict access
+    - Use connection pooling with limits
+    - Monitor and log all database connections
+  </Accordion>
+
+  <Accordion title="Secret Management">
+    **Development**:
+    - Use `.env` files locally
+    - Never share `.env` files via chat/email
+    
+    **Production**:
+    - AWS: Use AWS Secrets Manager or Parameter Store
+    - Docker: Use Docker secrets
+    - Kubernetes: Use Kubernetes secrets or external secret managers
+    - Azure: Use Azure Key Vault
+    - GCP: Use Google Secret Manager
+    
+    Example with AWS Secrets Manager:
+    ```bash
+    # Store secret
+    aws secretsmanager create-secret \
+      --name walle/prod/jwt-secret \
+      --secret-string "your-secret-key"
+    
+    # Retrieve in application
+    JWT_SECRET=$(aws secretsmanager get-secret-value \
+      --secret-id walle/prod/jwt-secret \
+      --query SecretString --output text)
+    ```
+  </Accordion>
+
+  <Accordion title="Credential Rotation">
+    Implement a rotation schedule:
+    
+    - **JWT_SECRET**: Every 90 days
+    - **Database passwords**: Every 180 days
+    - **MongoDB credentials**: Every 180 days
+    
+    Use automated rotation where possible:
+    ```bash
+    # AWS RDS automated password rotation
+    aws rds modify-db-instance \
+      --db-instance-identifier walle-prod \
+      --master-user-password $(generate-password) \
+      --apply-immediately
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Configuration Validation
+
+### Verify Configuration on Startup
+
+Create a configuration validation service:
+
+```typescript src/common/config/config.validation.ts
+import { plainToClass } from 'class-transformer';
+import { IsString, IsNumber, IsBoolean, validateSync } from 'class-validator';
+
+class EnvironmentVariables {
+  @IsString()
+  POSTGRES_HOST: string;
+
+  @IsNumber()
+  POSTGRES_PORT: number;
+
+  @IsString()
+  POSTGRES_USER: string;
+
+  @IsString()
+  POSTGRES_PASSWORD: string;
+
+  @IsString()
+  POSTGRES_DB: string;
+
+  @IsBoolean()
+  POSTGRES_SYNC: boolean;
+
+  @IsString()
+  MONGO_DELTA_DISPATCH_URI: string;
+
+  @IsString()
+  MONGO_AUTHSOFTWARE_URI: string;
+
+  @IsString()
+  JWT_SECRET: string;
+
+  @IsNumber()
+  PORT: number;
+}
+
+export function validate(config: Record<string, unknown>) {
+  const validatedConfig = plainToClass(EnvironmentVariables, config, {
+    enableImplicitConversion: true,
+  });
+  
+  const errors = validateSync(validatedConfig, {
+    skipMissingProperties: false,
+  });
+
+  if (errors.length > 0) {
+    throw new Error(errors.toString());
+  }
+  return validatedConfig;
+}
+```
+
+### Test Database Connections
+
+Verify all connections are working:
+
+```bash
+# PostgreSQL
+psql -h $POSTGRES_HOST -p $POSTGRES_PORT -U $POSTGRES_USER -d $POSTGRES_DB -c "SELECT version();"
+
+# MongoDB Delta Dispatch
+mongosh "$MONGO_DELTA_DISPATCH_URI" --eval "db.adminCommand('ping')"
+
+# MongoDB Auth Software
+mongosh "$MONGO_AUTHSOFTWARE_URI" --eval "db.adminCommand('ping')"
+```
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Environment variables not loading">
+    **Problem**: Variables defined in `.env` are undefined
+    
+    **Solutions**:
+    - Ensure `.env` file is in project root (same directory as `package.json`)
+    - Check file name is exactly `.env` (not `.env.txt`)
+    - Verify `ConfigModule.forRoot()` includes correct `envFilePath`
+    - Restart the application after changing `.env`
+    - Use `console.log(process.env.VARIABLE_NAME)` to debug
+  </Accordion>
+
+  <Accordion title="PostgreSQL connection refused">
+    **Problem**: `ECONNREFUSED` errors
+    
+    **Solutions**:
+    - Verify PostgreSQL is running: `pg_isready -h $POSTGRES_HOST -p $POSTGRES_PORT`
+    - Check host and port values
+    - Verify firewall allows connections on PostgreSQL port
+    - For Docker: use `host.docker.internal` instead of `localhost`
+  </Accordion>
+
+  <Accordion title="MongoDB authentication failed">
+    **Problem**: `MongoServerError: Authentication failed`
+    
+    **Solutions**:
+    - Verify username and password in connection URI
+    - Check if authentication is enabled: `mongosh --eval "db.adminCommand('getCmdLineOpts')"`
+    - Ensure user exists and has correct permissions
+    - Verify database name in connection string
+    - For Atlas: check network access IP whitelist
+  </Accordion>
+
+  <Accordion title="JWT secret too weak">
+    **Problem**: Security warnings about JWT secret
+    
+    **Solutions**:
+    - Generate a strong secret using crypto:
+      ```bash
+      node -e "console.log(require('crypto').randomBytes(64).toString('hex'))"
+      ```
+    - Ensure minimum 32 characters
+    - Use different secrets for each environment
+  </Accordion>
+</AccordionGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Partition Management" icon="table" href="/guides/partition-management">
+    Learn how to manage database partitions
+  </Card>
+  
+  <Card title="Setup Guide" icon="rocket" href="/guides/setup">
+    Complete installation and setup process
+  </Card>
+  
+  <Card title="Authentication" icon="lock" href="/api/auth/overview">
+    Configure JWT authentication
+  </Card>
+  
+  <Card title="API Reference" icon="code" href="/api/points/overview">
+    Explore the API endpoints
+  </Card>
+</CardGroup>

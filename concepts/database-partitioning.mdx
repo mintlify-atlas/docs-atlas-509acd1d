@@ -1,0 +1,388 @@
+---
+title: Database Partitioning Strategy
+description: Learn how Walle uses PostgreSQL table partitioning for efficient time-series telemetry data storage
+---
+
+## Overview
+
+Walle implements PostgreSQL table partitioning to efficiently manage high-volume AVL telemetry data. The system uses **RANGE partitioning by timestamp** to create daily partitions, ensuring optimal query performance and simplified data management.
+
+## Partitioning Strategy
+
+### RANGE Partitioning by Timestamp
+
+Telemetry points are partitioned into daily tables based on the `timestamp` field (stored as bigint milliseconds):
+
+- **Parent table**: `points` (partitioned table)
+- **Child partitions**: `points_YYYYMMDD` (e.g., `points_20260303`)
+- **Partition key**: `timestamp` (bigint, milliseconds since epoch)
+- **Partition range**: 24 hours (86,400,000 milliseconds)
+
+### Why Daily Partitioning?
+
+<AccordionGroup>
+  <Accordion title="Query Performance">
+    Queries filtering by date only scan relevant partitions instead of the entire dataset. For example, querying today's data only touches today's partition.
+  </Accordion>
+  
+  <Accordion title="Index Efficiency">
+    Each partition has its own indexes, keeping index sizes small and lookups fast. Smaller indexes fit better in memory.
+  </Accordion>
+  
+  <Accordion title="Data Retention">
+    Old partitions can be dropped instantly with a single DROP TABLE command, much faster than DELETE operations.
+  </Accordion>
+  
+  <Accordion title="Maintenance Operations">
+    VACUUM, ANALYZE, and REINDEX operations on individual partitions are faster and less disruptive than on monolithic tables.
+  </Accordion>
+</AccordionGroup>
+
+## Parent Table Structure
+
+The parent table is created with a composite primary key that includes the partition key, as required by PostgreSQL RANGE partitioning:
+
+```sql
+CREATE TABLE points (
+  id UUID NOT NULL DEFAULT gen_random_uuid(),
+  timestamp BIGINT NOT NULL,
+  
+  -- Device identification
+  tracker_device_imei BIGINT NOT NULL,
+  tracker_device_license_plate VARCHAR(20),
+  tracker_device_alias VARCHAR(100),
+  
+  -- Geospatial position (PostGIS)
+  location GEOMETRY(Point, 4326),
+  tracker_device_latitude DOUBLE PRECISION NOT NULL,
+  tracker_device_longitude DOUBLE PRECISION NOT NULL,
+  tracker_device_altitude DOUBLE PRECISION,
+  
+  -- Movement and speed
+  tracker_device_angle SMALLINT,
+  tracker_device_speed_ms REAL DEFAULT 0,
+  tracker_device_speed_kh REAL DEFAULT 0,
+  tracker_device_movement BOOLEAN DEFAULT false,
+  tracker_device_ignition BOOLEAN DEFAULT false,
+  
+  -- Trip tracking
+  tracker_device_trip_id INTEGER,
+  tracker_device_alarm VARCHAR(100),
+  
+  -- ... (50+ additional telemetry fields)
+  
+  -- Composite primary key (required for partitioning)
+  PRIMARY KEY (id, timestamp)
+) PARTITION BY RANGE (timestamp);
+```
+
+<Warning>
+PostgreSQL requires the partition key (`timestamp`) to be part of the primary key or unique constraint. This ensures uniqueness across partitions.
+</Warning>
+
+## Partition Manager Service
+
+The `PartitionManagerService` automates partition lifecycle management. Located at `src/app/points/partition-manager.service.ts`, it handles:
+
+### Parent Table Creation
+
+Executed once during application bootstrap:
+
+```typescript
+async createParentTableIfNotExists(): Promise<void> {
+  const queryRunner = this.dataSource.createQueryRunner();
+  await queryRunner.connect();
+
+  try {
+    const parentExists = await queryRunner.hasTable('points');
+
+    if (parentExists) {
+      this.logger.log('Parent table already exists. Skipping.');
+      return;
+    }
+
+    // Create partitioned parent table with SQL
+    await queryRunner.query(CREATE_POINTS_PARENT_TABLE);
+
+    this.logger.log('Partitioned parent table points created.');
+  } catch (error) {
+    this.logger.error('Failed to create partitioned parent table:', error);
+    throw error;
+  } finally {
+    await queryRunner.release();
+  }
+}
+```
+
+### Daily Partition Creation
+
+Creates a partition for a specific date with optimized indexes:
+
+```typescript
+async createPartitionForDate(date: Date): Promise<void> {
+  const queryRunner = this.dataSource.createQueryRunner();
+  await queryRunner.connect();
+
+  try {
+    const tableName = this.buildPartitionName(date); // e.g., "points_20260303"
+    const tsStart = startOfDayMs(date);              // Start of day in ms
+    const tsEnd = tsStart + 86_400_000;              // End of day (24h later)
+
+    const partitionExists = await queryRunner.hasTable(tableName);
+    if (partitionExists) {
+      this.logger.log(`Partition ${tableName} already exists. Skipping.`);
+      return;
+    }
+
+    // Create partition
+    await queryRunner.query(`
+      CREATE TABLE ${tableName}
+        PARTITION OF points
+        FOR VALUES FROM (${tsStart}) TO (${tsEnd})
+    `);
+
+    // Create indexes (see next section)
+    // ...
+
+    this.logger.log(`Partition ${tableName} created with all indexes.`);
+  } catch (error) {
+    this.logger.error(`Failed to create partition for ${date.toISOString()}`, error);
+    throw error;
+  } finally {
+    await queryRunner.release();
+  }
+}
+```
+
+### Partition Naming Convention
+
+Partitions follow the pattern `points_YYYYMMDD`:
+
+```typescript
+private buildPartitionName(date: Date): string {
+  return `points_${toDateStr(date)}`; // e.g., "points_20260303"
+}
+```
+
+## Scheduled Partition Creation
+
+Walle uses NestJS's `@Cron` decorator to automatically create partitions:
+
+```typescript
+@Cron('50 23 * * *') // Every day at 23:50 → create tomorrow's partition
+async scheduleNextDay(): Promise<void> {
+  const tomorrow = new Date();
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  await this.createPartitionForDate(tomorrow);
+}
+```
+
+<Info>
+The cron job runs at **23:50 daily** to create the next day's partition before midnight, ensuring no data insertion failures when the day rolls over.
+</Info>
+
+### Optional: Automated Partition Cleanup
+
+While currently commented out, Walle supports automatic deletion of old partitions:
+
+```typescript
+// @Cron('5 0 * * *')  // Every day at 00:05 → drop yesterday's partition
+// async cleanYesterday(): Promise<void> {
+//     await this.dropPartitionDaysAgo(1);
+// }
+
+async dropPartitionDaysAgo(daysAgo: number): Promise<void> {
+  const date = new Date();
+  date.setDate(date.getDate() - daysAgo);
+  const tableName = `points_${toDateStr(date)}`;
+
+  await this.dataSource.query(`DROP TABLE IF EXISTS ${tableName}`);
+  this.logger.log(`Partition ${tableName} dropped.`);
+}
+```
+
+## Index Strategy Per Partition
+
+Each partition is created with four specialized indexes optimized for common query patterns:
+
+### 1. Timestamp Index
+
+For time-range queries:
+
+```sql
+CREATE INDEX idx_points_20260303_timestamp
+  ON points_20260303 (timestamp);
+```
+
+**Use case**: Queries filtering by time range within a day
+
+```sql
+SELECT * FROM points
+WHERE timestamp BETWEEN 1709481600000 AND 1709485200000;
+```
+
+### 2. IMEI + Timestamp Index
+
+For device-specific time-series queries:
+
+```sql
+CREATE INDEX idx_points_20260303_imei_ts
+  ON points_20260303 (tracker_device_imei, timestamp);
+```
+
+**Use case**: Retrieve all points for a specific device in chronological order
+
+```sql
+SELECT * FROM points
+WHERE tracker_device_imei = 123456789012345
+ORDER BY timestamp DESC;
+```
+
+### 3. IMEI + Timestamp + Trip Index
+
+For trip-based queries:
+
+```sql
+CREATE INDEX idx_points_20260303_imei_ts_trip
+  ON points_20260303 (tracker_device_imei, timestamp, tracker_device_trip_id);
+```
+
+**Use case**: Analyze a specific vehicle's trip data
+
+```sql
+SELECT * FROM points
+WHERE tracker_device_imei = 123456789012345
+  AND tracker_device_trip_id = 42
+ORDER BY timestamp;
+```
+
+### 4. Geospatial Index (GIST)
+
+For location-based queries using PostGIS:
+
+```sql
+CREATE INDEX idx_points_20260303_location
+  ON points_20260303 USING GIST (location);
+```
+
+**Use case**: Find all vehicles within a geographic area
+
+```sql
+SELECT * FROM points
+WHERE ST_DWithin(
+  location::geography,
+  ST_SetSRID(ST_MakePoint(-74.006, 40.7128), 4326)::geography,
+  1000  -- 1km radius
+);
+```
+
+<Note>
+The GIST (Generalized Search Tree) index enables efficient spatial queries like proximity searches, polygon containment, and route analysis.
+</Note>
+
+## Performance Benefits
+
+### Query Performance
+
+| Query Type | Without Partitioning | With Daily Partitioning |
+|------------|---------------------|-------------------------|
+| Today's data | Scans entire table | Scans single partition |
+| Last 7 days | Scans entire table | Scans 7 partitions |
+| Specific device today | Full table + index | Single partition + index |
+| Geospatial query | Full GIST scan | Partition-specific GIST scan |
+
+### Write Performance
+
+- **Reduced index maintenance overhead**: Smaller indexes per partition
+- **Less lock contention**: Writes to different days hit different tables
+- **Faster autovacuum**: Smaller tables vacuum more quickly
+
+### Storage Management
+
+- **Instant data deletion**: `DROP TABLE` is instant vs. slow `DELETE` operations
+- **Easier archival**: Export/archive old partitions as separate files
+- **Simpler backup strategies**: Backup/restore individual partitions
+
+## Implementation in TypeORM
+
+The Point entity reflects the partitioned structure:
+
+```typescript
+@Entity({ name: 'points', synchronize: false })
+export class Point {
+  // Composite primary key required for partitioning
+  @PrimaryColumn({ type: 'uuid', name: 'id', default: () => 'gen_random_uuid()' })
+  id: string;
+
+  @PrimaryColumn({ type: 'bigint', name: 'timestamp' })
+  timestamp: number;
+
+  @Column({ type: 'bigint', name: 'tracker_device_imei' })
+  trackerDeviceImei: number;
+
+  @Column({
+    type: 'geometry',
+    spatialFeatureType: 'Point',
+    srid: 4326,
+    nullable: true,
+    name: 'location',
+  })
+  location: string;
+
+  // ... (50+ additional fields)
+}
+```
+
+<Warning>
+Note `synchronize: false` in the entity decorator. This prevents TypeORM from trying to auto-create tables, since partitioned tables must be created with raw SQL.
+</Warning>
+
+## Best Practices
+
+<CardGroup cols={2}>
+  <Card title="Always include timestamp" icon="clock">
+    Include the partition key in WHERE clauses to enable partition pruning
+  </Card>
+  <Card title="Pre-create partitions" icon="calendar">
+    Create partitions before data arrives to avoid insertion failures
+  </Card>
+  <Card title="Monitor partition growth" icon="chart-line">
+    Track partition sizes to detect anomalies in data volume
+  </Card>
+  <Card title="Plan retention policies" icon="trash">
+    Define how long to retain data before dropping old partitions
+  </Card>
+</CardGroup>
+
+## Troubleshooting
+
+### No partition exists for timestamp
+
+If you see an error like:
+
+```
+no partition of relation "points" found for row
+```
+
+**Solution**: Manually create the missing partition:
+
+```typescript
+await partitionManagerService.createPartitionForDate(new Date());
+```
+
+### Query not using partition pruning
+
+If queries scan all partitions instead of specific ones:
+
+**Solution**: Ensure your WHERE clause includes the partition key:
+
+```sql
+-- Bad: scans all partitions
+SELECT * FROM points WHERE tracker_device_imei = 12345;
+
+-- Good: only scans relevant partition
+SELECT * FROM points 
+WHERE tracker_device_imei = 12345 
+  AND timestamp >= 1709427600000  -- Include partition key!
+  AND timestamp < 1709514000000;
+```

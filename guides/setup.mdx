@@ -1,0 +1,371 @@
+---
+title: 'Setup Guide'
+description: 'Complete setup guide for Walle AVL telemetry tracking service'
+---
+
+## Overview
+
+This guide walks you through setting up Walle, an AVL (Automatic Vehicle Location) telemetry tracking API service built with NestJS. Walle uses PostgreSQL with table partitioning and PostGIS for geospatial data, along with MongoDB for additional data storage.
+
+## System Requirements
+
+<AccordionGroup>
+  <Accordion title="Software Requirements">
+    - **Node.js**: v18 or higher
+    - **npm**: v9 or higher
+    - **PostgreSQL**: v14 or higher with PostGIS extension
+    - **MongoDB**: v6 or higher
+    - **Operating System**: Linux, macOS, or Windows with WSL2
+  </Accordion>
+
+  <Accordion title="Hardware Requirements">
+    - **CPU**: 2+ cores recommended
+    - **RAM**: 4GB minimum, 8GB recommended
+    - **Storage**: 20GB+ for database partitions
+    - **Network**: Stable connection for MongoDB Atlas (if using cloud)
+  </Accordion>
+</AccordionGroup>
+
+## PostgreSQL Setup
+
+### Install PostgreSQL
+
+<CodeGroup>
+```bash Ubuntu/Debian
+sudo apt update
+sudo apt install postgresql postgresql-contrib postgis
+```
+
+```bash macOS (Homebrew)
+brew install postgresql@14 postgis
+brew services start postgresql@14
+```
+
+```bash RHEL/CentOS
+sudo yum install postgresql-server postgresql-contrib postgis
+sudo postgresql-setup initdb
+sudo systemctl start postgresql
+```
+</CodeGroup>
+
+### Enable PostGIS Extension
+
+PostGIS is required for geospatial functionality (storing and querying GPS coordinates).
+
+<Steps>
+  <Step title="Connect to PostgreSQL">
+    ```bash
+    sudo -u postgres psql
+    ```
+  </Step>
+
+  <Step title="Create the database">
+    ```sql
+    CREATE DATABASE walledb;
+    ```
+  </Step>
+
+  <Step title="Connect to walledb">
+    ```sql
+    \c walledb
+    ```
+  </Step>
+
+  <Step title="Enable PostGIS extension">
+    ```sql
+    CREATE EXTENSION IF NOT EXISTS postgis;
+    CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+    ```
+    
+    Verify installation:
+    ```sql
+    SELECT PostGIS_version();
+    ```
+  </Step>
+
+  <Step title="Create database user">
+    ```sql
+    CREATE USER ngynx WITH PASSWORD 'ngynx';
+    GRANT ALL PRIVILEGES ON DATABASE walledb TO ngynx;
+    GRANT ALL ON SCHEMA public TO ngynx;
+    ```
+  </Step>
+</Steps>
+
+### Configure PostgreSQL Authentication
+
+Edit `pg_hba.conf` to allow password authentication:
+
+```bash
+sudo nano /etc/postgresql/14/main/pg_hba.conf
+```
+
+Add or modify the following line:
+
+```conf
+# IPv4 local connections:
+host    walledb         ngynx           127.0.0.1/32            md5
+```
+
+Restart PostgreSQL:
+
+```bash
+sudo systemctl restart postgresql
+```
+
+## MongoDB Setup
+
+### Install MongoDB
+
+<CodeGroup>
+```bash Ubuntu/Debian
+wget -qO - https://www.mongodb.org/static/pgp/server-6.0.asc | sudo apt-key add -
+echo "deb [ arch=amd64,arm64 ] https://repo.mongodb.org/apt/ubuntu jammy/mongodb-org/6.0 multiverse" | sudo tee /etc/apt/sources.list.d/mongodb-org-6.0.list
+sudo apt update
+sudo apt install -y mongodb-org
+sudo systemctl start mongod
+sudo systemctl enable mongod
+```
+
+```bash macOS (Homebrew)
+brew tap mongodb/brew
+brew install mongodb-community@6.0
+brew services start mongodb-community@6.0
+```
+
+```bash Docker
+docker run -d --name mongodb \
+  -p 27017:27017 \
+  -e MONGO_INITDB_ROOT_USERNAME=admin \
+  -e MONGO_INITDB_ROOT_PASSWORD=password \
+  mongo:6.0
+```
+</CodeGroup>
+
+### Create MongoDB Databases
+
+Walle requires two MongoDB databases:
+
+```bash
+mongosh
+```
+
+```javascript
+use deltaDispatch
+db.createCollection("init")
+
+use authSoftware
+db.createCollection("users")
+```
+
+## Application Setup
+
+<Steps>
+  <Step title="Clone and Install Dependencies">
+    Navigate to the Walle source directory and install dependencies:
+    
+    ```bash
+    cd ~/workspace/source/walle
+    npm install
+    ```
+  </Step>
+
+  <Step title="Configure Environment Variables">
+    Create a `.env` file in the project root:
+    
+    ```bash
+    cp .env.example .env
+    ```
+    
+    See the [Environment Configuration](/guides/environment-configuration) guide for details.
+  </Step>
+
+  <Step title="Initialize Database">
+    Start the application to automatically create the partitioned table structure:
+    
+    ```bash
+    npm run start:dev
+    ```
+    
+    The application will:
+    - Create the `points` parent table with partitioning
+    - Create partitions for today and tomorrow
+    - Set up all required indexes
+  </Step>
+</Steps>
+
+## Database Initialization
+
+Walle automatically creates the partitioned table structure on first run. The parent table is defined in `src/app/database/constants/points.sql.ts:1`.
+
+### Parent Table Structure
+
+The `points` table is partitioned by `timestamp` (BIGINT) using range partitioning:
+
+```sql
+CREATE TABLE points (
+  id UUID NOT NULL DEFAULT gen_random_uuid(),
+  timestamp BIGINT NOT NULL,
+  
+  -- Device identification
+  tracker_device_imei BIGINT NOT NULL,
+  tracker_device_license_plate VARCHAR(20),
+  
+  -- Geospatial position (PostGIS)
+  location GEOMETRY(Point, 4326),
+  tracker_device_latitude DOUBLE PRECISION NOT NULL,
+  tracker_device_longitude DOUBLE PRECISION NOT NULL,
+  
+  -- Movement and speed
+  tracker_device_speed_kh REAL DEFAULT 0,
+  tracker_device_movement BOOLEAN DEFAULT false,
+  
+  -- Composite primary key (required for partitioning)
+  PRIMARY KEY (id, timestamp)
+) PARTITION BY RANGE (timestamp);
+```
+
+### Partition Creation
+
+Partitions are created automatically by `PartitionManagerService` in `src/app/points/partition-manager.service.ts:18`:
+
+- **On startup**: Creates partitions for today and tomorrow
+- **Daily schedule**: Creates next day's partition at 23:50
+- **Manual creation**: Use the service methods for specific dates
+
+## Verification Steps
+
+After setup, verify the installation using the provided verification script.
+
+### Run Verification Script
+
+```bash
+node verify-partitions.js
+```
+
+Expected output:
+
+```
+✅ Connected to PostgreSQL
+
+📊 Table Information:
+{
+  table_name: 'points',
+  table_type: 'Partitioned Table',
+  partition_key: 'RANGE (timestamp)'
+}
+
+📋 Partitions:
+  - points_2026_03_03: FOR VALUES FROM ('1709424000000') TO ('1709510400000')
+  - points_2026_03_04: FOR VALUES FROM ('1709510400000') TO ('1709596800000')
+
+🔍 Indexes on points_2026_03_03:
+  - idx_points_2026_03_03_timestamp
+  - idx_points_2026_03_03_imei_ts
+  - idx_points_2026_03_03_imei_ts_trip
+  - idx_points_2026_03_03_location
+```
+
+### Verify PostGIS
+
+Test PostGIS functionality:
+
+```sql
+SELECT ST_AsText(ST_MakePoint(-74.006, 40.7128));
+```
+
+Expected result:
+```
+POINT(-74.006 40.7128)
+```
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="PostgreSQL connection refused">
+    **Problem**: Cannot connect to PostgreSQL database
+    
+    **Solutions**:
+    - Check if PostgreSQL is running: `sudo systemctl status postgresql`
+    - Verify connection settings in `.env` file
+    - Check `pg_hba.conf` authentication settings
+    - Ensure the user has proper permissions:
+      ```sql
+      GRANT ALL PRIVILEGES ON DATABASE walledb TO ngynx;
+      GRANT ALL ON SCHEMA public TO ngynx;
+      ```
+  </Accordion>
+
+  <Accordion title="PostGIS extension not found">
+    **Problem**: `ERROR: could not open extension control file`
+    
+    **Solutions**:
+    - Install PostGIS: `sudo apt install postgis postgresql-14-postgis-3`
+    - Verify installation: `SELECT * FROM pg_available_extensions WHERE name = 'postgis';`
+    - Ensure you're connected to the correct database when creating extension
+  </Accordion>
+
+  <Accordion title="MongoDB connection timeout">
+    **Problem**: Cannot connect to MongoDB
+    
+    **Solutions**:
+    - Check if MongoDB is running: `sudo systemctl status mongod`
+    - Verify connection URI format in `.env`
+    - For MongoDB Atlas, check network access and IP whitelist
+    - Test connection: `mongosh <your-connection-string>`
+  </Accordion>
+
+  <Accordion title="Partition creation fails">
+    **Problem**: Error creating partitions on startup
+    
+    **Solutions**:
+    - Verify PostGIS extension is enabled
+    - Check that `POSTGRES_SYNC` is set to `false` in `.env`
+    - Ensure the user has CREATE TABLE permissions
+    - Manually create parent table if needed:
+      ```bash
+      psql -U ngynx -d walledb -f src/app/database/constants/points.sql.ts
+      ```
+  </Accordion>
+
+  <Accordion title="JWT authentication errors">
+    **Problem**: `401 Unauthorized` errors
+    
+    **Solutions**:
+    - Verify `JWT_SECRET` is set in `.env`
+    - Ensure the secret matches between token generation and validation
+    - Check token expiration settings in `src/app/auth/auth.module.ts`
+  </Accordion>
+
+  <Accordion title="Port already in use">
+    **Problem**: `Error: listen EADDRINUSE: address already in use :::3700`
+    
+    **Solutions**:
+    - Change the `PORT` in `.env` file
+    - Kill the process using the port:
+      ```bash
+      lsof -i :3700
+      kill -9 <PID>
+      ```
+  </Accordion>
+</AccordionGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Environment Configuration" icon="gear" href="/guides/environment-configuration">
+    Configure environment variables for different environments
+  </Card>
+  
+  <Card title="Partition Management" icon="table" href="/guides/partition-management">
+    Learn how to manage and monitor database partitions
+  </Card>
+  
+  <Card title="API Reference" icon="code" href="/api/auth/overview">
+    Explore the API endpoints and authentication
+  </Card>
+  
+  <Card title="Points API" icon="location-dot" href="/api/points/overview">
+    Start saving telemetry data points
+  </Card>
+</CardGroup>

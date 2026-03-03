@@ -1,0 +1,346 @@
+---
+title: 'PointsService API'
+description: 'Service class for managing Point entities'
+---
+
+## Overview
+
+The `PointsService` is a NestJS service class that provides business logic for working with Point entities. It uses the TypeORM repository pattern to interact with the partitioned `points` table.
+
+## Service Declaration
+
+```typescript
+import { Injectable } from '@nestjs/common';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
+import { Point } from './model/point.model';
+
+@Injectable()
+export class PointsService {
+    constructor(
+        @InjectRepository(Point)
+        private readonly pointsRepository: Repository<Point>,
+    ) { }
+}
+```
+
+## Dependency Injection
+
+The service uses TypeORM's `@InjectRepository` decorator to inject the Point repository.
+
+<ParamField path="pointsRepository" type="Repository<Point>">
+  TypeORM repository for executing queries and operations on the `points` table.
+</ParamField>
+
+## Repository Pattern
+
+The `pointsRepository` provides access to TypeORM's full query API:
+
+### Available Repository Methods
+
+<ResponseField name="find()" type="Promise<Point[]>">
+  Find multiple points matching criteria.
+  
+  ```typescript
+  const points = await this.pointsRepository.find({
+    where: { trackerDeviceImei: deviceImei },
+    order: { timestamp: 'DESC' },
+    take: 100
+  });
+  ```
+</ResponseField>
+
+<ResponseField name="findOne()" type="Promise<Point | null>">
+  Find a single point by criteria.
+  
+  ```typescript
+  const point = await this.pointsRepository.findOne({
+    where: { id: pointId, timestamp: timestamp }
+  });
+  ```
+</ResponseField>
+
+<ResponseField name="save()" type="Promise<Point>">
+  Insert or update a point.
+  
+  ```typescript
+  const newPoint = this.pointsRepository.create({
+    trackerDeviceImei: 123456789012345,
+    timestamp: Date.now(),
+    trackerDeviceLatitude: 19.4326,
+    trackerDeviceLongitude: -99.1332,
+    // ... other fields
+  });
+  
+  await this.pointsRepository.save(newPoint);
+  ```
+</ResponseField>
+
+<ResponseField name="createQueryBuilder()" type="SelectQueryBuilder<Point>">
+  Create complex queries with joins, aggregations, and raw SQL.
+  
+  ```typescript
+  const avgSpeed = await this.pointsRepository
+    .createQueryBuilder('point')
+    .select('AVG(point.tracker_device_speed_kh)', 'avg_speed')
+    .where('point.tracker_device_imei = :imei', { imei })
+    .andWhere('point.timestamp >= :start', { start: startTime })
+    .getRawOne();
+  ```
+</ResponseField>
+
+## Common Service Methods (Extensible)
+
+While the current implementation is minimal, here are typical methods you would add to `PointsService`:
+
+### Create Point
+
+```typescript
+async create(pointData: Partial<Point>): Promise<Point> {
+  const point = this.pointsRepository.create({
+    ...pointData,
+    timestamp: pointData.timestamp || Date.now()
+  });
+  
+  return await this.pointsRepository.save(point);
+}
+```
+
+### Bulk Insert
+
+```typescript
+async createBulk(points: Partial<Point>[]): Promise<Point[]> {
+  const entities = this.pointsRepository.create(points);
+  return await this.pointsRepository.save(entities, { chunk: 1000 });
+}
+```
+
+### Find by Time Range
+
+```typescript
+import { Between } from 'typeorm';
+
+async findByTimeRange(
+  deviceImei: number,
+  startTime: number,
+  endTime: number
+): Promise<Point[]> {
+  return await this.pointsRepository.find({
+    where: {
+      trackerDeviceImei: deviceImei,
+      timestamp: Between(startTime, endTime)
+    },
+    order: { timestamp: 'ASC' }
+  });
+}
+```
+
+### Find Latest Point
+
+```typescript
+async findLatest(deviceImei: number): Promise<Point | null> {
+  return await this.pointsRepository.findOne({
+    where: { trackerDeviceImei: deviceImei },
+    order: { timestamp: 'DESC' }
+  });
+}
+```
+
+### Spatial Query (Within Radius)
+
+```typescript
+async findNearLocation(
+  latitude: number,
+  longitude: number,
+  radiusMeters: number,
+  startTime: number
+): Promise<Point[]> {
+  return await this.pointsRepository
+    .createQueryBuilder('point')
+    .where('point.timestamp >= :startTime', { startTime })
+    .andWhere(
+      `ST_DWithin(
+        point.location::geography,
+        ST_MakePoint(:lon, :lat)::geography,
+        :radius
+      )`,
+      { lat: latitude, lon: longitude, radius: radiusMeters }
+    )
+    .orderBy('point.timestamp', 'DESC')
+    .getMany();
+}
+```
+
+### Calculate Daily Distance
+
+```typescript
+async getDailyDistance(
+  deviceImei: number,
+  date: Date
+): Promise<number> {
+  const startOfDay = new Date(date).setHours(0, 0, 0, 0);
+  const endOfDay = new Date(date).setHours(23, 59, 59, 999);
+  
+  const result = await this.pointsRepository
+    .createQueryBuilder('point')
+    .select('MAX(point.tracker_device_total_distance) - MIN(point.tracker_device_total_distance)', 'distance')
+    .where('point.tracker_device_imei = :imei', { imei: deviceImei })
+    .andWhere('point.timestamp BETWEEN :start AND :end', {
+      start: startOfDay,
+      end: endOfDay
+    })
+    .getRawOne();
+  
+  return result?.distance || 0;
+}
+```
+
+### Get Vehicle Route
+
+```typescript
+async getRoute(
+  deviceImei: number,
+  startTime: number,
+  endTime: number,
+  minDistanceBetweenPoints: number = 100 // meters
+): Promise<Point[]> {
+  // Returns points that are at least minDistanceBetweenPoints apart
+  // to reduce noise and create a cleaner route visualization
+  
+  const query = `
+    WITH numbered_points AS (
+      SELECT *,
+        LAG(location) OVER (ORDER BY timestamp) AS prev_location
+      FROM points
+      WHERE tracker_device_imei = $1
+        AND timestamp BETWEEN $2 AND $3
+    )
+    SELECT *
+    FROM numbered_points
+    WHERE prev_location IS NULL
+       OR ST_Distance(location::geography, prev_location::geography) >= $4
+    ORDER BY timestamp ASC
+  `;
+  
+  return await this.pointsRepository.query(query, [
+    deviceImei,
+    startTime,
+    endTime,
+    minDistanceBetweenPoints
+  ]);
+}
+```
+
+## Injecting the Service
+
+To use `PointsService` in other parts of your application:
+
+```typescript
+import { Injectable } from '@nestjs/common';
+import { PointsService } from './points.service';
+
+@Injectable()
+export class VehicleTrackingService {
+  constructor(private readonly pointsService: PointsService) {}
+  
+  async getVehicleCurrentLocation(imei: number) {
+    const latestPoint = await this.pointsService.findLatest(imei);
+    
+    return {
+      latitude: latestPoint.trackerDeviceLatitude,
+      longitude: latestPoint.trackerDeviceLongitude,
+      timestamp: latestPoint.timestamp,
+      speed: latestPoint.trackerDeviceSpeedKh,
+      heading: latestPoint.trackerDeviceAngle
+    };
+  }
+}
+```
+
+## Module Registration
+
+Ensure `PointsService` is registered in your module:
+
+```typescript
+import { Module } from '@nestjs/common';
+import { TypeOrmModule } from '@nestjs/typeorm';
+import { Point } from './model/point.model';
+import { PointsService } from './points.service';
+import { PointsController } from './points.controller';
+
+@Module({
+  imports: [TypeOrmModule.forFeature([Point])],
+  controllers: [PointsController],
+  providers: [PointsService],
+  exports: [PointsService] // Export if used by other modules
+})
+export class PointsModule {}
+```
+
+## Performance Considerations
+
+### Partitioning Awareness
+
+<Warning>
+  Always include `timestamp` in your WHERE clause to enable partition pruning. Queries without time constraints will scan all partitions.
+</Warning>
+
+```typescript
+// Good - partition pruning enabled
+await this.pointsRepository.find({
+  where: {
+    trackerDeviceImei: imei,
+    timestamp: Between(yesterday, now)
+  }
+});
+
+// Bad - full table scan across all partitions
+await this.pointsRepository.find({
+  where: { trackerDeviceImei: imei }
+});
+```
+
+### Indexing Strategy
+
+Create indexes to optimize common queries:
+
+```sql
+-- Index for device + time range queries
+CREATE INDEX idx_points_imei_timestamp 
+ON points (tracker_device_imei, timestamp DESC);
+
+-- Spatial index for location queries
+CREATE INDEX idx_points_location 
+ON points USING GIST (location);
+
+-- Index for trip analysis
+CREATE INDEX idx_points_trip 
+ON points (tracker_device_trip_id, timestamp);
+```
+
+### Batch Operations
+
+For bulk inserts, use chunking to avoid memory issues:
+
+```typescript
+async bulkInsertPoints(points: Partial<Point>[]): Promise<void> {
+  const chunkSize = 1000;
+  
+  for (let i = 0; i < points.length; i += chunkSize) {
+    const chunk = points.slice(i, i + chunkSize);
+    const entities = this.pointsRepository.create(chunk);
+    await this.pointsRepository.save(entities, { chunk: 500 });
+  }
+}
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Data Model" icon="database" href="/api/points/model">
+    Complete Point entity field reference
+  </Card>
+  <Card title="API Overview" icon="book" href="/api/points/overview">
+    Points API concepts and patterns
+  </Card>
+</CardGroup>

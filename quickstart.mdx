@@ -1,80 +1,335 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: 'Quickstart'
+description: 'Get Walle running locally in under 10 minutes'
 ---
 
-## Get started in three steps
+## Prerequisites
 
-Get your documentation site running locally and make your first customization.
-
-### Step 1: Set up your local environment
-
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
-    
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
-    
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
-
-### Step 2: Deploy your changes
-
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
-
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
-
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
-
-### Step 3: Go live
-
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
-
-## Next steps
-
-Now that you have your docs running, explore these key features:
+Before you begin, ensure you have the following installed:
 
 <CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
+  <Card title="Node.js" icon="node-js">
+    Version 18.x or higher recommended
+  </Card>
+  <Card title="PostgreSQL" icon="database">
+    Version 12+ with PostGIS extension
+  </Card>
+  <Card title="MongoDB" icon="leaf">
+    Version 4.4+ for authentication and dispatch data
+  </Card>
+  <Card title="npm" icon="box">
+    Comes bundled with Node.js
+  </Card>
 </CardGroup>
 
-<Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
-</Note>
+## Installation
+
+<Steps>
+  <Step title="Clone the repository">
+    Clone the Walle repository to your local machine:
+    
+    ```bash
+    git clone <repository-url>
+    cd walle
+    ```
+  </Step>
+
+  <Step title="Install dependencies">
+    Install all required npm packages:
+    
+    ```bash
+    npm install
+    ```
+    
+    This will install key dependencies including:
+    - `@nestjs/core` and `@nestjs/common` - NestJS framework
+    - `@nestjs/typeorm` and `typeorm` - PostgreSQL ORM
+    - `@nestjs/mongoose` and `mongoose` - MongoDB ODM
+    - `@nestjs/jwt` and `passport-jwt` - Authentication
+    - `@nestjs/schedule` - Cron job scheduling
+    - `pg` - PostgreSQL driver
+  </Step>
+
+  <Step title="Configure environment variables">
+    Create a `.env` file in the project root with the following configuration:
+    
+    ```bash .env
+    # Server Configuration
+    PORT=3700
+    
+    # PostgreSQL Configuration (Time-series telemetry data)
+    POSTGRES_HOST=localhost
+    POSTGRES_PORT=5432
+    POSTGRES_USER=your_postgres_user
+    POSTGRES_PASSWORD=your_postgres_password
+    POSTGRES_DB=walledb
+    POSTGRES_SYNC=false
+    
+    # MongoDB Configuration (User authentication)
+    MONGO_AUTHSOFTWARE_URI=mongodb://localhost:27017/authsoftware
+    
+    # MongoDB Configuration (Dispatch data)
+    MONGO_DELTA_DISPATCH_URI=mongodb://localhost:27017/deltadispatch
+    
+    # JWT Configuration
+    JWT_SECRET=your-super-secret-jwt-key-change-this-in-production
+    ```
+    
+    <Warning>
+      Make sure to change `JWT_SECRET` to a strong, random value in production environments. Never commit your `.env` file to version control.
+    </Warning>
+    
+    <Note>
+      The environment variable names are read from constants defined in `src/common/constants/database.constant.ts` and `src/common/constants/settings.contant.ts`.
+    </Note>
+  </Step>
+
+  <Step title="Set up PostgreSQL database">
+    Create the PostgreSQL database and enable PostGIS:
+    
+    ```bash
+    # Connect to PostgreSQL
+    psql -U postgres
+    
+    # Create database
+    CREATE DATABASE walledb;
+    
+    # Connect to the database
+    \c walledb
+    
+    # Enable PostGIS extension for geospatial queries
+    CREATE EXTENSION IF NOT EXISTS postgis;
+    ```
+    
+    <Note>
+      The partitioned `points` table will be created automatically when you start the application. See `src/main.ts:13` and `src/app/database/constants/points.sql.ts` for the table schema.
+    </Note>
+  </Step>
+
+  <Step title="Set up MongoDB databases">
+    Ensure MongoDB is running and the required databases are accessible:
+    
+    ```bash
+    # Start MongoDB service
+    mongod
+    
+    # Connect to MongoDB
+    mongosh
+    
+    # Databases will be created automatically on first connection
+    # Verify connection by listing databases:
+    show dbs
+    ```
+    
+    The application will automatically create two MongoDB connections:
+    - `deltaDispatch` - For dispatch-related data
+    - `authSoftware` - For user authentication
+  </Step>
+
+  <Step title="Initialize database partitions">
+    The application automatically creates the partitioned parent table and initial partitions on startup:
+    
+    ```typescript
+    // From src/main.ts:12-15
+    const partitionManager = app.get(PartitionManagerService);
+    await partitionManager.createParentTableIfNotExists();
+    await partitionManager.createPartitionForDate(new Date());
+    await partitionManager.createPartitionForDate(new Date(Date.now() + 86_400_000));
+    ```
+    
+    This creates:
+    - The partitioned parent table `points` with RANGE partitioning on `timestamp`
+    - Today's partition (e.g., `points_20260303`)
+    - Tomorrow's partition (e.g., `points_20260304`)
+    - Indexes for timestamp, IMEI, trip ID, and geospatial location
+    
+    <Note>
+      A cron job automatically creates tomorrow's partition every day at 23:50 to ensure uninterrupted data collection.
+    </Note>
+  </Step>
+</Steps>
+
+## Running the Application
+
+<Tabs>
+  <Tab title="Development Mode">
+    Start the application in development mode with auto-reload:
+    
+    ```bash
+    npm run start:dev
+    ```
+    
+    This uses the NestJS CLI command `nest start --watch` from `package.json:12` to automatically restart the server when you make code changes.
+    
+    The application will start on `http://localhost:3700` (or the port specified in your `.env` file).
+  </Tab>
+  
+  <Tab title="Production Mode">
+    Build and run the application in production mode:
+    
+    ```bash
+    # Build the application
+    npm run build
+    
+    # Start in production mode
+    npm run start:prod
+    ```
+    
+    This compiles TypeScript to JavaScript in the `dist/` directory and runs the optimized build using `node dist/main` from `package.json:14`.
+  </Tab>
+  
+  <Tab title="Debug Mode">
+    Start with debugging enabled for troubleshooting:
+    
+    ```bash
+    npm run start:debug
+    ```
+    
+    This starts the application with Node.js inspector enabled, allowing you to attach a debugger from your IDE.
+  </Tab>
+</Tabs>
+
+## Verify Installation
+
+Check the console output to confirm successful startup:
+
+```bash
+[Nest] 12345  - 03/03/2026, 10:30:00 AM     LOG [NestFactory] Starting Nest application...
+[Nest] 12345  - 03/03/2026, 10:30:01 AM     LOG [InstanceLoader] AppModule dependencies initialized
+[Nest] 12345  - 03/03/2026, 10:30:01 AM     LOG [InstanceLoader] TypeOrmModule dependencies initialized
+[Nest] 12345  - 03/03/2026, 10:30:01 AM     LOG [InstanceLoader] MongooseModule dependencies initialized
+[Nest] 12345  - 03/03/2026, 10:30:02 AM     LOG [PartitionManagerService] Partitioned parent table points created.
+[Nest] 12345  - 03/03/2026, 10:30:02 AM     LOG [PartitionManagerService] Partition points_20260303 created with all indexes.
+[Nest] 12345  - 03/03/2026, 10:30:02 AM     LOG [PartitionManagerService] Partition points_20260304 created with all indexes.
+[Nest] 12345  - 03/03/2026, 10:30:02 AM     LOG [NestApplication] Nest application successfully started
+```
+
+## Making Your First API Call
+
+<Steps>
+  <Step title="Authenticate and get JWT token">
+    First, you need to authenticate to receive a JWT token. The authentication uses the `JwtStrategy` defined in `src/app/auth/strategies/jwt.strategy.ts`:
+    
+    ```bash
+    curl -X POST http://localhost:3700/auth/login \
+      -H "Content-Type: application/json" \
+      -d '{
+        "user_dni": 12345678,
+        "password": "your_password"
+      }'
+    ```
+    
+    Response:
+    ```json
+    {
+      "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+      "expires_in": "8h"
+    }
+    ```
+    
+    <Note>
+      JWT tokens expire after 8 hours as configured in `src/app/auth/auth.module.ts:17`. The token is validated against the user's DNI using `UserService.findOneDni()` from `src/app/auth/strategies/jwt.strategy.ts:24`.
+    </Note>
+  </Step>
+
+  <Step title="Query tracking points">
+    Use the JWT token to access protected endpoints:
+    
+    ```bash
+    curl http://localhost:3700/points \
+      -H "Authorization: Bearer YOUR_JWT_TOKEN_HERE"
+    ```
+    
+    <Note>
+      The Points controller is defined in `src/app/points/points.controller.ts`. While the basic structure is in place, you may need to implement specific endpoints based on your requirements.
+    </Note>
+  </Step>
+
+  <Step title="Create a tracking point">
+    Insert a new vehicle telemetry point:
+    
+    ```bash
+    curl -X POST http://localhost:3700/points \
+      -H "Authorization: Bearer YOUR_JWT_TOKEN_HERE" \
+      -H "Content-Type: application/json" \
+      -d '{
+        "timestamp": 1709467200000,
+        "trackerDeviceImei": 123456789012345,
+        "trackerDeviceLicensePlate": "ABC-123",
+        "trackerDeviceLatitude": -12.0464,
+        "trackerDeviceLongitude": -77.0428,
+        "trackerDeviceAltitude": 154.0,
+        "trackerDeviceSpeedKh": 45.5,
+        "trackerDeviceMovement": true,
+        "trackerDeviceIgnition": true
+      }'
+    ```
+    
+    The Point entity includes 50+ fields as defined in `src/app/points/model/point.model.ts`. Key fields include:
+    
+    - **Required**: `timestamp`, `trackerDeviceImei`, `trackerDeviceLatitude`, `trackerDeviceLongitude`
+    - **Geospatial**: `location` (PostGIS Point geometry with SRID 4326)
+    - **Movement**: `trackerDeviceSpeedMs`, `trackerDeviceSpeedKh`, `trackerDeviceAngle`, `trackerDeviceMovement`
+    - **Engine**: `trackerDeviceIgnition`, `trackerDeviceEngineHours`, `trackerDeviceFuelConsumedPerDay`
+    - **GNSS**: `trackerDeviceNumberOfSatellites`, `trackerDeviceGnssPdop`, `trackerDeviceGnssHdop`
+    
+    <Warning>
+      The Point model uses a composite primary key of `(id, timestamp)` as required by PostgreSQL range partitioning. See `src/app/points/model/point.model.ts:6-16` for details.
+    </Warning>
+  </Step>
+</Steps>
+
+## Understanding Partition Management
+
+Walle uses time-series partitioning to efficiently manage high-volume GPS data:
+
+### Automatic Daily Partitions
+
+Partitions are automatically created using the naming pattern `points_YYYYMMDD`:
+
+```sql
+-- Example partition for March 3, 2026
+CREATE TABLE points_20260303
+  PARTITION OF points
+  FOR VALUES FROM (1709424000000) TO (1709510400000)
+```
+
+### Partition Indexes
+
+Each partition includes optimized indexes defined in `src/app/points/partition-manager.service.ts:67-84`:
+
+- `idx_points_YYYYMMDD_timestamp` - Time-range queries
+- `idx_points_YYYYMMDD_imei_ts` - Device-specific queries
+- `idx_points_YYYYMMDD_imei_ts_trip` - Trip tracking queries  
+- `idx_points_YYYYMMDD_location` - Geospatial queries (GIST index)
+
+### Scheduled Partition Creation
+
+A cron job runs daily at 23:50 to create tomorrow's partition:
+
+```typescript
+// From src/app/points/partition-manager.service.ts:111-116
+@Cron('50 23 * * *')
+async scheduleNextDay(): Promise<void> {
+  const tomorrow = new Date();
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  await this.createPartitionForDate(tomorrow);
+}
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Architecture" icon="sitemap" href="/concepts/architecture">
+    Learn about Walle's multi-database architecture and design decisions
+  </Card>
+  <Card title="Point Data Model" icon="location-dot" href="/api/points/model">
+    Explore all 50+ fields available in the Point entity
+  </Card>
+  <Card title="Partition Management" icon="database" href="/guides/partition-management">
+    Deep dive into partition creation, maintenance, and cleanup
+  </Card>
+  <Card title="Authentication" icon="lock" href="/concepts/authentication">
+    Understand JWT authentication and user management
+  </Card>
+</CardGroup>

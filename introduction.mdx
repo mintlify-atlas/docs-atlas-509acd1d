@@ -1,0 +1,161 @@
+---
+title: Introduction
+description: 'Welcome to Walle - AVL telemetry tracking API service for vehicle GPS data management'
+---
+
+## Welcome to Walle
+
+Walle is a high-performance AVL (Automatic Vehicle Location) telemetry tracking API service built with NestJS. It provides robust infrastructure for collecting, storing, and querying vehicle GPS tracking data at scale using time-series partitioning and geospatial indexing.
+
+<CardGroup cols={2}>
+  <Card
+    title="Quickstart"
+    icon="rocket"
+    href="/quickstart"
+  >
+    Get Walle up and running in minutes with our step-by-step guide
+  </Card>
+  <Card
+    title="Architecture"
+    icon="sitemap"
+    href="/concepts/architecture"
+  >
+    Understand Walle's multi-database architecture and design patterns
+  </Card>
+  <Card
+    title="API Reference"
+    icon="code"
+    href="/api/points/overview"
+  >
+    Explore the complete API documentation and data models
+  </Card>
+  <Card
+    title="Partition Management"
+    icon="database"
+    href="/guides/partition-management"
+  >
+    Learn how Walle manages time-series data with automated partitioning
+  </Card>
+</CardGroup>
+
+## Key Features
+
+Walle is designed to handle high-volume vehicle telemetry data with enterprise-grade reliability:
+
+### Time-Series Partitioned PostgreSQL
+
+Automatic daily partitioning for high-volume telemetry data ensures optimal query performance and efficient data retention management. Partitions are created automatically by the `PartitionManagerService` with scheduled jobs that run at 23:50 daily.
+
+```typescript
+// Automatic partition creation in main.ts:14
+await partitionManager.createPartitionForDate(new Date());
+await partitionManager.createPartitionForDate(new Date(Date.now() + 86_400_000));
+```
+
+### JWT-Based Authentication
+
+Secure authentication using Passport JWT strategy with 8-hour token expiration. The authentication module integrates with MongoDB for user management.
+
+```typescript
+// JWT configuration from auth.module.ts:16
+signOptions: {
+  expiresIn: '8h'
+}
+```
+
+### Multi-Database Architecture
+
+Strategic separation of concerns with PostgreSQL for time-series telemetry data and MongoDB for user authentication and dispatch data:
+
+- **PostgreSQL (walledb)**: Time-series partitioned storage for vehicle tracking points with PostGIS geospatial support
+- **MongoDB (deltaDispatch)**: User and dispatch data management  
+- **MongoDB (authSoftware)**: Authentication and authorization data
+
+### Automated Partition Management
+
+Scheduled cron jobs automatically create tomorrow's partition at 23:50 daily, ensuring uninterrupted data collection:
+
+```typescript
+// From partition-manager.service.ts:111
+@Cron('50 23 * * *')
+async scheduleNextDay(): Promise<void> {
+  const tomorrow = new Date();
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  await this.createPartitionForDate(tomorrow);
+}
+```
+
+### Comprehensive Vehicle Tracking Data Model
+
+The `Point` entity includes 50+ attributes for complete vehicle telemetry tracking:
+
+- **Location data**: Latitude, longitude, altitude, PostGIS geometry with SRID 4326
+- **Movement metrics**: Speed (m/s and km/h), angle, distance, movement state
+- **Engine data**: Ignition state, engine hours, fuel consumption
+- **GNSS information**: Satellite count, PDOP, HDOP, accuracy
+- **Geofencing**: Sector detection, quadrant tracking, jurisdiction zones
+- **Hardware telemetry**: GSM signal, battery level, network type
+
+<Note>
+  The Point model uses a composite primary key `(id, timestamp)` required for PostgreSQL range partitioning.
+</Note>
+
+### PostGIS Geospatial Indexing
+
+GIST indexes on location columns enable efficient spatial queries for geofencing, proximity searches, and route analysis:
+
+```sql
+-- From partition-manager.service.ts:82
+CREATE INDEX idx_points_YYYYMMDD_location
+  ON points_YYYYMMDD USING GIST (location)
+```
+
+## Architecture Overview
+
+Walle follows a modular NestJS architecture with clear separation of concerns:
+
+```
+src/
+├── app.module.ts              # Root module with database connections
+├── main.ts                    # Bootstrap with partition initialization
+└── app/
+    ├── auth/                  # JWT authentication module
+    │   ├── auth.module.ts
+    │   └── strategies/
+    │       └── jwt.strategy.ts
+    ├── user/                  # User management (MongoDB)
+    │   ├── user.module.ts
+    │   ├── user.service.ts
+    │   └── schema/user.schema.ts
+    ├── points/                # Vehicle tracking points
+    │   ├── points.module.ts
+    │   ├── points.service.ts
+    │   ├── points.controller.ts
+    │   ├── partition-manager.service.ts
+    │   └── model/point.model.ts
+    └── database/              # Database configuration
+        ├── database.module.ts
+        ├── config/database-postgresql.config.ts
+        └── constants/points.sql.ts
+```
+
+## Use Cases
+
+Walle is ideal for:
+
+- **Fleet Management**: Track vehicle locations, routes, and operational metrics in real-time
+- **Public Safety**: Monitor emergency vehicle positions and response times
+- **Logistics**: Analyze delivery routes, fuel efficiency, and driver behavior
+- **Urban Planning**: Collect traffic pattern data for infrastructure decisions
+- **Asset Tracking**: Monitor high-value mobile assets across large geographic areas
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Get Started" icon="play" href="/quickstart">
+    Follow the quickstart guide to install and run Walle locally
+  </Card>
+  <Card title="Explore the API" icon="book" href="/api/points/model">
+    Learn about the Point data model and available fields
+  </Card>
+</CardGroup>

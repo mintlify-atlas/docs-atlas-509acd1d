@@ -1,0 +1,237 @@
+---
+title: System Architecture
+description: Overview of Walle's multi-database architecture and module structure
+---
+
+## Overview
+
+Walle is built on NestJS and follows a modular architecture designed for high-volume AVL (Automatic Vehicle Location) telemetry data processing. The system uses a dual-database approach to optimize for different data access patterns.
+
+## Multi-Database Architecture
+
+### PostgreSQL with PostGIS
+
+Handles time-series telemetry data (tracking points) with:
+- **Time-series partitioning** for efficient querying of large datasets
+- **PostGIS extension** for geospatial operations and queries
+- **Optimized for write-heavy workloads** with high-volume telemetry ingestion
+- **Daily table partitions** to maintain query performance
+
+### MongoDB
+
+Manages user and application data with:
+- **DeltaDispatch database** for user profiles and authentication data
+- **AuthSoftware database** for additional authentication services
+- **Optimized for flexible schemas** and user data retrieval
+
+## NestJS Module Structure
+
+Walle's application is organized into specialized modules defined in `src/app.module.ts`:
+
+```typescript
+@Module({
+  imports: [
+    ConfigModule.forRoot({
+      isGlobal: true,
+      envFilePath: ['.env']
+    }),
+
+    // Multi-database setup
+    DatabaseModule.forDeltaDispatchApplication(process.env.MONGO_DELTA_DISPATCH_URI!),
+    DatabaseModule.forAuthSoftwareApplication(process.env.MONGO_AUTHSOFTWARE_URI!),
+
+    UserModule,
+    AuthModule,
+    PointsModule,
+  ]
+})
+export class AppModule { }
+```
+
+### Core Modules
+
+#### DatabaseModule
+
+Provides database connectivity for both PostgreSQL and MongoDB:
+
+- **PostgreSQL connection** via TypeORM for time-series telemetry data
+- **MongoDB connections** via Mongoose for user data
+- **Dynamic module configuration** for multiple database connections
+- Located in `src/app/database/database.module.ts`
+
+```typescript
+@Global()
+@Module({
+  imports: [
+    TypeOrmModule.forRootAsync({
+      imports: [ConfigModule],
+      inject: [ConfigService],
+      useFactory: getPostgresDatabaseConfig,
+    })
+  ]
+})
+export class DatabaseModule {
+  static forDeltaDispatchApplication(_uri: string): DynamicModule {
+    return {
+      module: DatabaseModule,
+      imports: [MongooseModule.forRoot(_uri, { connectionName: DELTA_DISPATCH_DB_NAME })],
+      exports: [MongooseModule]
+    }
+  }
+
+  static forAuthSoftwareApplication(_uri: string): DynamicModule {
+    return {
+      module: DatabaseModule,
+      imports: [MongooseModule.forRoot(_uri, { connectionName: AUTHSOFTWARE_SERVER_DB_NAME })],
+      exports: [MongooseModule]
+    }
+  }
+}
+```
+
+#### AuthModule
+
+Handles JWT-based authentication:
+
+- **Passport JWT strategy** for token validation
+- **8-hour token expiration** configured via JwtModule
+- **Integrates with UserModule** for user lookup and validation
+- Located in `src/app/auth/auth.module.ts`
+
+```typescript
+@Module({
+  imports: [
+    PassportModule, ConfigModule, UserModule,
+    JwtModule.registerAsync({
+      inject: [ConfigService],
+      useFactory: (config: ConfigService) => ({
+        secret: config.get<string>(JWT_SECRET),
+        signOptions: { expiresIn: '8h' }
+      })
+    })
+  ],
+  providers: [JwtStrategy]
+})
+export class AuthModule { }
+```
+
+#### UserModule
+
+Manages user data from MongoDB:
+
+- **Mongoose schemas** for user documents
+- **User lookup by DNI** for authentication
+- **Connects to DeltaDispatch database**
+- Located in `src/app/user/user.module.ts`
+
+#### PointsModule
+
+Handles telemetry tracking points:
+
+- **TypeORM entities** for PostgreSQL time-series data
+- **PartitionManagerService** for automated partition management
+- **ScheduleModule** for cron-based partition creation
+- **REST endpoints** for point ingestion and retrieval
+- Located in `src/app/points/points.module.ts`
+
+```typescript
+@Module({
+  imports: [
+    ScheduleModule.forRoot(),
+    TypeOrmModule.forFeature([Point]),
+  ],
+  controllers: [PointsController],
+  providers: [PointsService, PartitionManagerService],
+  exports: [PartitionManagerService],
+})
+export class PointsModule { }
+```
+
+## Data Flow for Tracking Points
+
+### Incoming Telemetry Data
+
+1. **HTTP Request** arrives at PointsController
+2. **Authentication** validated via JWT strategy
+3. **PointsService** processes the tracking data
+4. **Point entity** contains rich telemetry including:
+   - GPS coordinates (latitude, longitude, altitude)
+   - PostGIS geometry for spatial queries
+   - Speed, angle, and movement data
+   - Device status (ignition, battery, GSM signal)
+   - Geofence and sector tracking
+   - Trip and alarm information
+5. **TypeORM** inserts data into the appropriate daily partition
+6. **Automatic partition routing** based on timestamp
+
+### Partition Management
+
+1. **Bootstrap**: Parent partitioned table created if it doesn't exist
+2. **Daily Cron Job**: Runs at 23:50 to create next day's partition
+3. **Automatic Indexing**: Each partition gets optimized indexes for:
+   - Timestamp queries
+   - IMEI + timestamp lookups
+   - Trip tracking queries
+   - Geospatial queries (GIST index)
+
+## Component Interaction
+
+```
+┌─────────────────────────────────────────────────────┐
+│                    Client Request                    │
+└───────────────────────┬─────────────────────────────┘
+                        │
+                        ▼
+┌─────────────────────────────────────────────────────┐
+│              AuthModule (JWT Validation)             │
+│          ┌──────────────────────────────┐           │
+│          │     JwtStrategy validates     │           │
+│          │  token & fetches user from   │           │
+│          │         UserService          │           │
+│          └──────────────────────────────┘           │
+└───────────────────────┬─────────────────────────────┘
+                        │
+                        ▼
+┌─────────────────────────────────────────────────────┐
+│               PointsController/Service               │
+│    Processes telemetry data and coordinates with     │
+│              PartitionManagerService                 │
+└───────────────────────┬─────────────────────────────┘
+                        │
+           ┌────────────┴────────────┐
+           ▼                         ▼
+┌──────────────────────┐  ┌──────────────────────┐
+│    PostgreSQL DB     │  │     MongoDB DBs      │
+│  (Time-series data)  │  │    (User data)       │
+│                      │  │                      │
+│  • Partitioned by    │  │  • DeltaDispatch     │
+│    timestamp         │  │  • AuthSoftware      │
+│  • PostGIS enabled   │  │                      │
+│  • Daily partitions  │  │                      │
+└──────────────────────┘  └──────────────────────┘
+```
+
+<Note>
+The dual-database architecture allows Walle to optimize for both high-volume time-series writes (PostgreSQL) and flexible user data queries (MongoDB).
+</Note>
+
+## Key Design Patterns
+
+### Separation of Concerns
+
+- **Time-series data** isolated in PostgreSQL partitions
+- **User/authentication data** in MongoDB for flexibility
+- **Clear module boundaries** with defined responsibilities
+
+### Scalability
+
+- **Horizontal partition scaling** via daily table partitioning
+- **Index optimization** per partition for query performance
+- **Automatic partition management** prevents manual operations
+
+### Maintainability
+
+- **TypeORM entities** provide type-safe database operations
+- **Mongoose schemas** for flexible MongoDB documents
+- **Modular architecture** enables independent module updates
+- **Configuration management** via environment variables

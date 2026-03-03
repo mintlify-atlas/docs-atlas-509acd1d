@@ -1,0 +1,220 @@
+---
+title: UserService
+description: Service for managing user operations with MongoDB
+---
+
+## UserService Class
+
+The `UserService` class provides methods for interacting with user data stored in MongoDB. It uses Mongoose for database operations and is injected with the User model from the DELTA_DISPATCH database.
+
+**Source**: `src/app/user/user.service.ts`
+
+## Constructor
+
+The service is initialized with dependency injection:
+
+```typescript
+constructor(
+  @InjectModel(User.name, DELTA_DISPATCH_DB_NAME)
+  private readonly userModel: Model<UserDocument>,
+) { }
+```
+
+<ParamField path="userModel" type="Model<UserDocument>">
+  Mongoose model for User collection, injected from the DELTA_DISPATCH database connection
+</ParamField>
+
+## Methods
+
+### findOneDni()
+
+Finds a single user by their DNI (national identity document number).
+
+**Source**: `src/app/user/user.service.ts:14`
+
+```typescript
+async findOneDni(dni: number): Promise<UserDocument | null>
+```
+
+#### Parameters
+
+<ParamField path="dni" type="number" required>
+  The user's DNI number to search for
+</ParamField>
+
+#### Returns
+
+<ResponseField name="result" type="UserDocument | null">
+  Returns the user document if found, or `null` if no user exists with the given DNI
+</ResponseField>
+
+#### Example
+
+```typescript
+import { UserService } from './user.service';
+
+// Inject the service
+constructor(private readonly userService: UserService) {}
+
+// Find user by DNI
+async authenticateUser(dni: number) {
+  const user = await this.userService.findOneDni(dni);
+  
+  if (!user) {
+    throw new Error('User not found');
+  }
+  
+  return {
+    id: user._id,
+    name: user.user_fullname,
+    role: user.user_role,
+    isAdmin: user.user_admin,
+  };
+}
+```
+
+#### Implementation Details
+
+The method uses Mongoose's `findOne()` query to search for a user where `user_dni` matches the provided DNI:
+
+```typescript
+return this.userModel.findOne({ user_dni: dni }).exec();
+```
+
+## User Schema
+
+The User model is defined in `src/app/user/schema/user.schema.ts` and includes the following key fields:
+
+### Authentication Fields
+
+<ParamField path="user_dni" type="number">
+  User's national identity document number (used for authentication)
+</ParamField>
+
+<ParamField path="user_username" type="string">
+  Username for login
+</ParamField>
+
+<ParamField path="user_password" type="string">
+  Hashed password
+</ParamField>
+
+<ParamField path="user_email" type="string">
+  User's email address
+</ParamField>
+
+### Profile Fields
+
+<ParamField path="user_name" type="string">
+  User's first name
+</ParamField>
+
+<ParamField path="user_lastname" type="string">
+  User's last name
+</ParamField>
+
+<ParamField path="user_fullname" type="string">
+  User's full name
+</ParamField>
+
+<ParamField path="user_cellphone" type="number">
+  User's cellphone number
+</ParamField>
+
+<ParamField path="user_photo" type="string">
+  URL or path to user's photo
+</ParamField>
+
+<ParamField path="user_color" type="string">
+  Color associated with the user (for UI purposes)
+</ParamField>
+
+### Authorization Fields
+
+<ParamField path="user_role" type="string" default="Operador">
+  User's role in the system
+</ParamField>
+
+<ParamField path="user_position" type="string" default="Empleado">
+  User's job position
+</ParamField>
+
+<ParamField path="user_isroot" type="boolean">
+  Whether the user has root privileges
+</ParamField>
+
+<ParamField path="user_admin" type="boolean">
+  Whether the user has admin privileges
+</ParamField>
+
+<ParamField path="user_is_inspector" type="boolean">
+  Whether the user is an inspector (for cadastre module)
+</ParamField>
+
+### Module Access Permissions
+
+<ParamField path="web_seguridad_ciudadana" type="boolean">
+  Access to citizen security module
+</ParamField>
+
+<ParamField path="web_catastro" type="boolean">
+  Access to cadastre module
+</ParamField>
+
+<ParamField path="web_rentas" type="boolean">
+  Access to revenue module
+</ParamField>
+
+<ParamField path="web_inspecciones" type="boolean">
+  Access to inspections module
+</ParamField>
+
+<ParamField path="fichas" type="boolean">
+  Access to forms/records module
+</ParamField>
+
+### State Fields
+
+<ParamField path="user_state" type="boolean" default="true">
+  Whether the user account is active
+</ParamField>
+
+<ParamField path="user_available" type="boolean" default="true">
+  Whether the user is currently available
+</ParamField>
+
+<ParamField path="user_date_deactivation" type="string">
+  Date when the user was deactivated
+</ParamField>
+
+### Additional Fields
+
+<ParamField path="workgroup_name" type="string">
+  Name of the workgroup the user belongs to
+</ParamField>
+
+<ParamField path="notification_token" type="string">
+  Token for push notifications
+</ParamField>
+
+<ParamField path="user_code" type="number">
+  Internal user code
+</ParamField>
+
+<ParamField path="user_creation_date" type="Date">
+  When the user account was created
+</ParamField>
+
+<ParamField path="user_latest_update" type="Date">
+  When the user account was last updated
+</ParamField>
+
+## MongoDB Connection
+
+The UserService connects to MongoDB using the `DELTA_DISPATCH_DB_NAME` connection name. This connection is configured through the DatabaseModule:
+
+```typescript
+DatabaseModule.forDeltaDispatchApplication(process.env.MONGO_URI)
+```
+
+See [Database Configuration](/api/database/configuration) for more details on the multi-database setup.

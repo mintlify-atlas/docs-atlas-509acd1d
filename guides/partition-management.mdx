@@ -1,0 +1,621 @@
+---
+title: 'Partition Management'
+description: 'Comprehensive guide to managing PostgreSQL table partitions in Walle'
+---
+
+## Overview
+
+Walle uses PostgreSQL table partitioning to efficiently manage large volumes of telemetry data. The `points` table is partitioned by date (using `timestamp` as the partition key), with each partition storing one day of data.
+
+Partitioning provides several benefits:
+- **Query Performance**: Faster queries by scanning only relevant partitions
+- **Maintenance**: Easier to archive or drop old data
+- **Scalability**: Better handling of large datasets
+- **Index Size**: Smaller, more efficient indexes per partition
+
+## Partition Architecture
+
+### Parent Table Structure
+
+The parent table is defined in `src/app/database/constants/points.sql.ts:1` and created by `PartitionManagerService` on application startup (`src/main.ts:13`).
+
+```sql
+CREATE TABLE points (
+  id UUID NOT NULL DEFAULT gen_random_uuid(),
+  timestamp BIGINT NOT NULL,
+  
+  -- Device and location fields
+  tracker_device_imei BIGINT NOT NULL,
+  location GEOMETRY(Point, 4326),
+  tracker_device_latitude DOUBLE PRECISION NOT NULL,
+  tracker_device_longitude DOUBLE PRECISION NOT NULL,
+  
+  -- Additional telemetry fields...
+  
+  PRIMARY KEY (id, timestamp)
+) PARTITION BY RANGE (timestamp);
+```
+
+<Note>
+  The composite primary key `(id, timestamp)` is required because the partition key (`timestamp`) must be part of the primary key in PostgreSQL range partitioning.
+</Note>
+
+### Partition Naming Convention
+
+Partitions follow the naming pattern: `points_YYYY_MM_DD`
+
+**Examples**:
+- `points_2026_03_03` - Partition for March 3, 2026
+- `points_2026_03_04` - Partition for March 4, 2026
+- `points_2026_12_31` - Partition for December 31, 2026
+
+The naming is implemented in `src/app/points/partition-manager.service.ts:105`:
+
+```typescript
+private buildPartitionName(date: Date): string {
+  return `points_${toDateStr(date)}`;
+}
+```
+
+### Partition Bounds
+
+Each partition stores data for a 24-hour period using UNIX timestamps in milliseconds:
+
+- **Start**: Midnight (00:00:00.000) of the date
+- **End**: Midnight (00:00:00.000) of the next date (exclusive)
+
+**Example** for March 3, 2026:
+```sql
+CREATE TABLE points_2026_03_03
+  PARTITION OF points
+  FOR VALUES FROM (1709424000000) TO (1709510400000)
+```
+
+## Automatic Partition Management
+
+### Startup Initialization
+
+On application startup, Walle automatically creates partitions for the current and next day in `src/main.ts:12-15`:
+
+```typescript
+const partitionManager = app.get(PartitionManagerService);
+await partitionManager.createParentTableIfNotExists();
+await partitionManager.createPartitionForDate(new Date());
+await partitionManager.createPartitionForDate(new Date(Date.now() + 86_400_000));
+```
+
+<Steps>
+  <Step title="Check Parent Table">
+    Verifies if the `points` parent table exists. If not, creates it.
+  </Step>
+  
+  <Step title="Create Today's Partition">
+    Creates a partition for the current date if it doesn't exist.
+  </Step>
+  
+  <Step title="Create Tomorrow's Partition">
+    Pre-creates tomorrow's partition to ensure no downtime at midnight.
+  </Step>
+</Steps>
+
+### Scheduled Partition Creation
+
+Walle uses a cron job to automatically create future partitions in `src/app/points/partition-manager.service.ts:111-116`:
+
+```typescript
+@Cron('50 23 * * *') // Every day at 23:50
+async scheduleNextDay(): Promise<void> {
+  const tomorrow = new Date();
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  await this.createPartitionForDate(tomorrow);
+}
+```
+
+**Schedule**: Daily at 23:50 (10 minutes before midnight)
+
+**Purpose**: Ensures the next day's partition is ready before data starts arriving at midnight.
+
+<Tip>
+  The 10-minute buffer (23:50 instead of 23:59) provides time for the partition creation to complete and prevents edge cases near midnight.
+</Tip>
+
+## Manual Partition Management
+
+### Creating Partitions for Specific Dates
+
+You can manually create partitions for any date using the `PartitionManagerService`.
+
+#### Via NestJS Console (Recommended)
+
+Create a script in `scripts/create-partition.ts`:
+
+```typescript scripts/create-partition.ts
+import { NestFactory } from '@nestjs/core';
+import { AppModule } from '../src/app.module';
+import { PartitionManagerService } from '../src/app/points/partition-manager.service';
+
+async function createPartition() {
+  const app = await NestFactory.createApplicationContext(AppModule);
+  const partitionManager = app.get(PartitionManagerService);
+
+  // Create partition for specific date
+  const targetDate = new Date('2026-04-01');
+  
+  console.log(`Creating partition for ${targetDate.toISOString()}...`);
+  await partitionManager.createPartitionForDate(targetDate);
+  console.log('✅ Partition created successfully');
+
+  await app.close();
+}
+
+createPartition().catch(console.error);
+```
+
+Run the script:
+```bash
+npx ts-node scripts/create-partition.ts
+```
+
+#### Via Direct SQL
+
+You can also create partitions directly using SQL:
+
+```sql
+-- Calculate timestamps (example for 2026-04-01)
+SELECT 
+  EXTRACT(EPOCH FROM '2026-04-01 00:00:00'::timestamp) * 1000 AS start_ts,
+  EXTRACT(EPOCH FROM '2026-04-02 00:00:00'::timestamp) * 1000 AS end_ts;
+
+-- Create partition
+CREATE TABLE points_2026_04_01
+  PARTITION OF points
+  FOR VALUES FROM (1743465600000) TO (1743552000000);
+
+-- Create indexes
+CREATE INDEX idx_points_2026_04_01_timestamp
+  ON points_2026_04_01 (timestamp);
+
+CREATE INDEX idx_points_2026_04_01_imei_ts
+  ON points_2026_04_01 (tracker_device_imei, timestamp);
+
+CREATE INDEX idx_points_2026_04_01_imei_ts_trip
+  ON points_2026_04_01 (tracker_device_imei, timestamp, tracker_device_trip_id);
+
+CREATE INDEX idx_points_2026_04_01_location
+  ON points_2026_04_01 USING GIST (location);
+```
+
+### Creating Multiple Partitions in Bulk
+
+To create partitions for a date range:
+
+```typescript scripts/create-bulk-partitions.ts
+import { NestFactory } from '@nestjs/core';
+import { AppModule } from '../src/app.module';
+import { PartitionManagerService } from '../src/app/points/partition-manager.service';
+
+async function createBulkPartitions() {
+  const app = await NestFactory.createApplicationContext(AppModule);
+  const partitionManager = app.get(PartitionManagerService);
+
+  const startDate = new Date('2026-04-01');
+  const endDate = new Date('2026-04-30');
+
+  console.log(`Creating partitions from ${startDate.toISOString()} to ${endDate.toISOString()}`);
+
+  let currentDate = new Date(startDate);
+  let createdCount = 0;
+
+  while (currentDate <= endDate) {
+    console.log(`Creating partition for ${currentDate.toISOString().split('T')[0]}...`);
+    await partitionManager.createPartitionForDate(new Date(currentDate));
+    createdCount++;
+    
+    currentDate.setDate(currentDate.getDate() + 1);
+  }
+
+  console.log(`✅ Created ${createdCount} partitions successfully`);
+  await app.close();
+}
+
+createBulkPartitions().catch(console.error);
+```
+
+Run:
+```bash
+npx ts-node scripts/create-bulk-partitions.ts
+```
+
+## Partition Indexes
+
+Each partition automatically receives four indexes for optimal query performance, created in `src/app/points/partition-manager.service.ts:66-84`:
+
+### 1. Timestamp Index
+```sql
+CREATE INDEX idx_points_YYYY_MM_DD_timestamp
+  ON points_YYYY_MM_DD (timestamp);
+```
+**Purpose**: Fast filtering by timestamp ranges within the partition.
+
+### 2. IMEI + Timestamp Index
+```sql
+CREATE INDEX idx_points_YYYY_MM_DD_imei_ts
+  ON points_YYYY_MM_DD (tracker_device_imei, timestamp);
+```
+**Purpose**: Efficient queries for specific devices over time.
+
+### 3. IMEI + Timestamp + Trip Index
+```sql
+CREATE INDEX idx_points_YYYY_MM_DD_imei_ts_trip
+  ON points_YYYY_MM_DD (tracker_device_imei, timestamp, tracker_device_trip_id);
+```
+**Purpose**: Fast retrieval of trip-specific data for devices.
+
+### 4. Geospatial Index (GIST)
+```sql
+CREATE INDEX idx_points_YYYY_MM_DD_location
+  ON points_YYYY_MM_DD USING GIST (location);
+```
+**Purpose**: Spatial queries (point-in-polygon, distance calculations, etc.).
+
+<Note>
+  The GIST index requires the PostGIS extension and enables efficient geospatial queries like finding points within a radius or polygon.
+</Note>
+
+## Dropping Old Partitions
+
+### Manual Partition Deletion
+
+To drop a specific partition:
+
+```sql
+DROP TABLE IF EXISTS points_2026_01_01;
+```
+
+<Warning>
+  Dropping a partition permanently deletes all data in that partition. Ensure you have backups before dropping partitions.
+</Warning>
+
+### Automated Partition Cleanup
+
+The `PartitionManagerService` includes a method to drop partitions by age in `src/app/points/partition-manager.service.ts:96-103`:
+
+```typescript
+async dropPartitionDaysAgo(daysAgo: number): Promise<void> {
+  const date = new Date();
+  date.setDate(date.getDate() - daysAgo);
+  const tableName = `points_${toDateStr(date)}`;
+
+  await this.dataSource.query(`DROP TABLE IF EXISTS ${tableName}`);
+  this.logger.log(`Partition ${tableName} dropped.`);
+}
+```
+
+**Usage Example**:
+```typescript
+// Drop partition from 30 days ago
+await partitionManager.dropPartitionDaysAgo(30);
+```
+
+### Scheduled Cleanup (Optional)
+
+You can enable automated cleanup by uncommenting the cron job in `src/app/points/partition-manager.service.ts:118-121`:
+
+```typescript
+@Cron('5 0 * * *')  // Every day at 00:05
+async cleanYesterday(): Promise<void> {
+  await this.dropPartitionDaysAgo(1);
+}
+```
+
+<Warning>
+  By default, this cleanup job is **disabled** to prevent accidental data loss. Only enable it if you have a data retention policy and backup strategy in place.
+</Warning>
+
+### Archiving Before Deletion
+
+Before dropping old partitions, consider archiving the data:
+
+```bash
+# Export partition data to CSV
+psql -U ngynx -d walledb -c "\COPY points_2026_01_01 TO '/backup/points_2026_01_01.csv' CSV HEADER"
+
+# Or use pg_dump for full backup
+pg_dump -U ngynx -d walledb -t points_2026_01_01 -f /backup/points_2026_01_01.sql
+
+# Then drop the partition
+psql -U ngynx -d walledb -c "DROP TABLE points_2026_01_01"
+```
+
+## Monitoring Partition Health
+
+### Verify Partitions Script
+
+Walle includes a verification script at the project root: `verify-partitions.js`
+
+**Usage**:
+```bash
+node verify-partitions.js
+```
+
+**Output**:
+```
+✅ Connected to PostgreSQL
+
+📊 Table Information:
+{
+  table_name: 'points',
+  table_type: 'Partitioned Table',
+  partition_key: 'RANGE (timestamp)'
+}
+
+📋 Partitions:
+  - points_2026_03_03: FOR VALUES FROM ('1709424000000') TO ('1709510400000')
+  - points_2026_03_04: FOR VALUES FROM ('1709510400000') TO ('1709596800000')
+
+🔍 Indexes on points_2026_03_03:
+  - idx_points_2026_03_03_timestamp
+  - idx_points_2026_03_03_imei_ts
+  - idx_points_2026_03_03_imei_ts_trip
+  - idx_points_2026_03_03_location
+```
+
+### List All Partitions
+
+Query to list all partitions with their bounds:
+
+```sql
+SELECT 
+  child.relname AS partition_name,
+  pg_get_expr(child.relpartbound, child.oid) AS partition_bounds,
+  pg_size_pretty(pg_total_relation_size(child.oid)) AS size
+FROM pg_inherits
+JOIN pg_class parent ON pg_inherits.inhparent = parent.oid
+JOIN pg_class child ON pg_inherits.inhrelid = child.oid
+WHERE parent.relname = 'points'
+ORDER BY child.relname;
+```
+
+### Check Partition Sizes
+
+```sql
+SELECT 
+  schemaname,
+  tablename,
+  pg_size_pretty(pg_total_relation_size(schemaname||'.'||tablename)) AS size,
+  pg_total_relation_size(schemaname||'.'||tablename) AS size_bytes
+FROM pg_tables
+WHERE tablename LIKE 'points_%'
+ORDER BY size_bytes DESC;
+```
+
+### Count Rows Per Partition
+
+```sql
+SELECT 
+  child.relname AS partition_name,
+  (SELECT count(*) FROM ONLY points_table) AS row_count
+FROM pg_inherits
+JOIN pg_class parent ON pg_inherits.inhparent = parent.oid
+JOIN pg_class child ON pg_inherits.inhrelid = child.oid
+WHERE parent.relname = 'points'
+ORDER BY child.relname;
+```
+
+### Identify Missing Partitions
+
+Find dates without partitions:
+
+```sql
+WITH date_series AS (
+  SELECT generate_series(
+    CURRENT_DATE - INTERVAL '30 days',
+    CURRENT_DATE + INTERVAL '7 days',
+    INTERVAL '1 day'
+  )::date AS date
+),
+expected_partitions AS (
+  SELECT 'points_' || to_char(date, 'YYYY_MM_DD') AS partition_name
+  FROM date_series
+),
+existing_partitions AS (
+  SELECT child.relname AS partition_name
+  FROM pg_inherits
+  JOIN pg_class parent ON pg_inherits.inhparent = parent.oid
+  JOIN pg_class child ON pg_inherits.inhrelid = child.oid
+  WHERE parent.relname = 'points'
+)
+SELECT ep.partition_name
+FROM expected_partitions ep
+LEFT JOIN existing_partitions ex ON ep.partition_name = ex.partition_name
+WHERE ex.partition_name IS NULL
+ORDER BY ep.partition_name;
+```
+
+## Best Practices
+
+<AccordionGroup>
+  <Accordion title="Pre-create Future Partitions">
+    Always maintain partitions for at least tomorrow to prevent insert failures at midnight.
+    
+    The automated cron job handles this, but you can manually create additional future partitions:
+    ```typescript
+    // Create partitions for next 7 days
+    for (let i = 0; i < 7; i++) {
+      const futureDate = new Date();
+      futureDate.setDate(futureDate.getDate() + i);
+      await partitionManager.createPartitionForDate(futureDate);
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="Monitor Partition Growth">
+    Track partition sizes to identify unusual data growth:
+    
+    ```sql
+    -- Alert if any partition exceeds 10GB
+    SELECT tablename, pg_size_pretty(pg_total_relation_size(tablename::regclass))
+    FROM pg_tables
+    WHERE tablename LIKE 'points_%'
+      AND pg_total_relation_size(tablename::regclass) > 10737418240
+    ORDER BY pg_total_relation_size(tablename::regclass) DESC;
+    ```
+  </Accordion>
+
+  <Accordion title="Regular Index Maintenance">
+    Reindex partitions periodically to maintain performance:
+    
+    ```sql
+    -- Reindex a specific partition
+    REINDEX TABLE points_2026_03_03;
+    
+    -- Or reindex all partitions
+    REINDEX TABLE points;
+    ```
+    
+    Schedule during low-traffic periods.
+  </Accordion>
+
+  <Accordion title="Backup Strategy">
+    Implement partition-level backups:
+    
+    ```bash
+    #!/bin/bash
+    # Backup yesterday's partition
+    YESTERDAY=$(date -d "yesterday" +%Y_%m_%d)
+    pg_dump -U ngynx -d walledb -t points_$YESTERDAY \
+      -f /backup/points_$YESTERDAY.sql
+    
+    # Compress backup
+    gzip /backup/points_$YESTERDAY.sql
+    ```
+  </Accordion>
+
+  <Accordion title="Partition Retention Policy">
+    Define and document a retention policy:
+    
+    **Example Policy**:
+    - **Hot data**: Last 30 days (full partitions in database)
+    - **Warm data**: 31-90 days (compressed, archived to S3)
+    - **Cold data**: 90+ days (archived, partitions dropped)
+    
+    Automate cleanup:
+    ```typescript
+    @Cron('0 2 * * 0') // Weekly at 2 AM on Sundays
+    async archiveAndCleanup(): Promise<void> {
+      // Archive partitions older than 30 days
+      await this.archivePartitionDaysAgo(30);
+      
+      // Drop partitions older than 90 days
+      await this.dropPartitionDaysAgo(90);
+    }
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Partition creation fails">
+    **Problem**: Error creating partition
+    
+    **Common causes**:
+    - PostGIS extension not enabled
+    - Insufficient permissions
+    - Overlapping partition bounds
+    
+    **Solutions**:
+    ```sql
+    -- Check PostGIS
+    SELECT PostGIS_version();
+    
+    -- Grant permissions
+    GRANT CREATE ON SCHEMA public TO ngynx;
+    
+    -- Check existing partitions for overlaps
+    SELECT child.relname, pg_get_expr(child.relpartbound, child.oid)
+    FROM pg_inherits
+    JOIN pg_class parent ON pg_inherits.inhparent = parent.oid
+    JOIN pg_class child ON pg_inherits.inhrelid = child.oid
+    WHERE parent.relname = 'points'
+    ORDER BY child.relname;
+    ```
+  </Accordion>
+
+  <Accordion title="Insert fails: no partition found">
+    **Problem**: `ERROR: no partition of relation "points" found for row`
+    
+    **Cause**: Attempting to insert data for a date without a partition
+    
+    **Solution**:
+    ```typescript
+    // Create partition for the data's date before inserting
+    const dataDate = new Date(point.timestamp);
+    await partitionManager.createPartitionForDate(dataDate);
+    ```
+  </Accordion>
+
+  <Accordion title="Slow queries across partitions">
+    **Problem**: Queries scanning multiple partitions are slow
+    
+    **Solutions**:
+    - Always include timestamp in WHERE clause to enable partition pruning:
+      ```sql
+      -- Good: Only scans one partition
+      SELECT * FROM points 
+      WHERE timestamp >= 1709424000000 
+        AND timestamp < 1709510400000
+        AND tracker_device_imei = 123456;
+      
+      -- Bad: Scans all partitions
+      SELECT * FROM points 
+      WHERE tracker_device_imei = 123456;
+      ```
+    - Use EXPLAIN to verify partition pruning:
+      ```sql
+      EXPLAIN SELECT * FROM points WHERE timestamp >= 1709424000000;
+      ```
+  </Accordion>
+
+  <Accordion title="Indexes not being used">
+    **Problem**: Queries not using indexes
+    
+    **Check**:
+    ```sql
+    -- Verify indexes exist
+    SELECT indexname, indexdef 
+    FROM pg_indexes 
+    WHERE tablename = 'points_2026_03_03';
+    
+    -- Check query plan
+    EXPLAIN ANALYZE 
+    SELECT * FROM points_2026_03_03 
+    WHERE tracker_device_imei = 123456;
+    ```
+    
+    **Solution**: Reindex if needed:
+    ```sql
+    REINDEX TABLE points_2026_03_03;
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Setup Guide" icon="rocket" href="/guides/setup">
+    Complete installation and database setup
+  </Card>
+  
+  <Card title="Environment Configuration" icon="gear" href="/guides/environment-configuration">
+    Configure database connections
+  </Card>
+  
+  <Card title="Points API" icon="location-dot" href="/api/points/overview">
+    Start saving telemetry data
+  </Card>
+  
+  <Card title="Points Service" icon="magnifying-glass" href="/api/points/service">
+    Query partitioned data efficiently
+  </Card>
+</CardGroup>
