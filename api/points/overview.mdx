@@ -22,16 +22,37 @@ Key characteristics:
 - **PostGIS enabled**: Spatial queries using the `location` geometry column
 - **High-volume ingestion**: Optimized for continuous telemetry data streams
 
-## Typical Endpoints
+## Points Controller
 
-The Points API follows standard REST patterns:
+The `PointsController` is defined in `src/app/points/points.controller.ts` but does not yet have endpoints implemented. The controller provides the structure for you to add your own REST endpoints.
 
-```
-GET    /points              # List points with filters
-GET    /points/:id          # Get specific point
-POST   /points              # Create new point(s)
-PATCH  /points/:id          # Update point
-DELETE /points/:id          # Delete point
+<Note>
+  You'll need to implement your own endpoints in the controller. The `PointsService` and TypeORM repository are ready to use for data access.
+</Note>
+
+**Example implementation:**
+
+```typescript
+import { Controller, Get, Post, Body, Query } from '@nestjs/common';
+import { PointsService } from './points.service';
+import { Auth } from 'src/common/decorators';
+
+@Controller('points')
+export class PointsController {
+  constructor(private readonly pointsService: PointsService) {}
+
+  @Get()
+  @Auth()
+  async findAll(@Query('imei') imei: number) {
+    // Add your query logic using pointsService
+  }
+
+  @Post()
+  @Auth()
+  async create(@Body() createPointDto: any) {
+    // Add your creation logic
+  }
+}
 ```
 
 ## Time-Series Query Patterns

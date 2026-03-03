@@ -12,24 +12,33 @@ Walle uses **JWT (JSON Web Token)** authentication with **Passport** strategies 
 ```mermaid
 sequenceDiagram
     participant Client
-    participant API
+    participant Controller
+    participant JwtService
     participant JwtStrategy
     participant UserService
     participant MongoDB
 
-    Client->>API: POST /auth/login (credentials)
-    API->>MongoDB: Validate credentials
-    MongoDB-->>API: User data
-    API-->>Client: JWT token (8h expiration)
+    Note over Client,MongoDB: Login Flow (you implement this)
+    Client->>Controller: Login request (credentials)
+    Controller->>UserService: findOneDni(dni)
+    UserService->>MongoDB: findOne({ user_dni })
+    MongoDB-->>UserService: User document
+    UserService-->>Controller: User with password hash
+    Controller->>Controller: Verify password (bcrypt)
+    Controller->>JwtService: sign({ user_dni })
+    JwtService-->>Controller: JWT token
+    Controller-->>Client: JWT token (8h expiration)
     
-    Client->>API: GET /points (with JWT in header)
-    API->>JwtStrategy: Extract & verify token
-    JwtStrategy->>UserService: Lookup user by DNI
+    Note over Client,MongoDB: Protected Request Flow (built-in)
+    Client->>Controller: Protected endpoint + JWT header
+    Controller->>JwtStrategy: Extract & verify token
+    JwtStrategy->>JwtStrategy: Validate signature & expiration
+    JwtStrategy->>UserService: findOneDni(payload.user_dni)
     UserService->>MongoDB: findOne({ user_dni })
     MongoDB-->>UserService: User document
     UserService-->>JwtStrategy: User object
-    JwtStrategy-->>API: Authenticated user
-    API-->>Client: Protected resource
+    JwtStrategy-->>Controller: Authenticated user
+    Controller-->>Client: Protected resource
 ```
 
 ## JWT Strategy Implementation
@@ -365,92 +374,120 @@ MONGO_AUTHSOFTWARE_URI=mongodb://localhost:27017/auth_software
 Passport returns a generic "Unauthorized" message for all authentication failures to prevent information leakage.
 </Info>
 
-## Example: Complete Authentication Flow
+## Example: Using the Authentication Infrastructure
 
-### 1. Login Request
+<Note>
+  The auth infrastructure is implemented but you'll need to create your own auth controller with login endpoints. Below is an example of how to implement and use it.
+</Note>
 
-```bash
-curl -X POST http://localhost:3000/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{
-    "dni": 12345678,
-    "password": "securepassword"
-  }'
-```
+### 1. Implement Login Endpoint
 
-### 2. Login Response
+```typescript
+import { Controller, Post, Body, UnauthorizedException } from '@nestjs/common';
+import { JwtService } from '@nestjs/jwt';
+import { UserService } from '../user/user.service';
+import * as bcrypt from 'bcrypt';
 
-```json
-{
-  "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
-}
-```
+@Controller('auth')
+export class AuthController {
+  constructor(
+    private jwtService: JwtService,
+    private userService: UserService
+  ) {}
 
-### 3. Authenticated Request
-
-```bash
-curl -X GET http://localhost:3000/points \
-  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
-```
-
-### 4. Success Response
-
-```json
-{
-  "data": [
-    {
-      "id": "550e8400-e29b-41d4-a716-446655440000",
-      "timestamp": 1709481600000,
-      "trackerDeviceImei": 123456789012345,
-      "trackerDeviceLatitude": -12.0464,
-      "trackerDeviceLongitude": -77.0428,
-      // ... more fields
+  @Post('login')
+  async login(@Body() loginDto: { user_dni: number; password: string }) {
+    const user = await this.userService.findOneDni(loginDto.user_dni);
+    
+    if (!user || !await bcrypt.compare(loginDto.password, user.user_password)) {
+      throw new UnauthorizedException('Invalid credentials');
     }
-  ]
+    
+    const payload = { user_dni: user.user_dni };
+    return {
+      access_token: this.jwtService.sign(payload)
+    };
+  }
 }
 ```
+
+### 2. Protect Endpoints with @Auth()
+
+```typescript
+import { Controller, Get } from '@nestjs/common';
+import { Auth } from 'src/common/decorators';
+import { User } from 'src/common/decorators';
+
+@Controller('protected')
+export class MyController {
+  
+  @Get()
+  @Auth()  // Requires JWT authentication
+  getData(@User() user) {
+    // user is populated by JwtStrategy.validate()
+    return {
+      message: 'Authenticated',
+      userDni: user.user_dni
+    };
+  }
+}
+```
+
+### 3. JWT Token Flow
+
+1. Client sends credentials to your login endpoint
+2. Server validates and signs JWT with `user_dni` in payload
+3. Client receives JWT token (valid for 8 hours)
+4. Client includes token in `Authorization: Bearer <token>` header
+5. `JwtStrategy.validate()` looks up user by DNI from payload
+6. Request proceeds with `user` object populated
 
 ## Testing Authentication
 
-Use the following approach to test protected endpoints:
+Test the JwtStrategy and guards:
 
 ```typescript
 import { Test } from '@nestjs/testing';
-import { INestApplication } from '@nestjs/common';
-import * as request from 'supertest';
-import { AppModule } from '../src/app.module';
+import { JwtStrategy } from './strategies/jwt.strategy';
+import { UserService } from '../user/user.service';
+import { ConfigService } from '@nestjs/config';
 
-describe('Authentication (e2e)', () => {
-  let app: INestApplication;
-  let authToken: string;
+describe('JwtStrategy', () => {
+  let strategy: JwtStrategy;
+  let userService: UserService;
 
-  beforeAll(async () => {
-    const moduleFixture = await Test.createTestingModule({
-      imports: [AppModule],
+  beforeEach(async () => {
+    const module = await Test.createTestingModule({
+      providers: [
+        JwtStrategy,
+        {
+          provide: UserService,
+          useValue: { findOneDni: jest.fn() }
+        },
+        {
+          provide: ConfigService,
+          useValue: { get: jest.fn().mockReturnValue('test-secret') }
+        }
+      ]
     }).compile();
 
-    app = moduleFixture.createNestApplication();
-    await app.init();
+    strategy = module.get<JwtStrategy>(JwtStrategy);
+    userService = module.get<UserService>(UserService);
+  });
 
-    // Login to get token
-    const loginResponse = await request(app.getHttpServer())
-      .post('/auth/login')
-      .send({ dni: 12345678, password: 'test' });
+  it('should validate user with valid DNI in payload', async () => {
+    const mockUser = { user_dni: 12345678, user_name: 'Test' };
+    jest.spyOn(userService, 'findOneDni').mockResolvedValue(mockUser as any);
+
+    const result = await strategy.validate({ user_dni: 12345678 });
     
-    authToken = loginResponse.body.access_token;
+    expect(result).toEqual(mockUser);
+    expect(userService.findOneDni).toHaveBeenCalledWith(12345678);
   });
 
-  it('/points (GET) should require authentication', () => {
-    return request(app.getHttpServer())
-      .get('/points')
-      .expect(401);  // Unauthorized without token
-  });
-
-  it('/points (GET) should work with valid token', () => {
-    return request(app.getHttpServer())
-      .get('/points')
-      .set('Authorization', `Bearer ${authToken}`)
-      .expect(200);
+  it('should return null if DNI not in payload', async () => {
+    const result = await strategy.validate({ sub: 'some-id' });
+    expect(result).toBeNull();
   });
 });
 ```

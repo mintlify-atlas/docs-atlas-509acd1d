@@ -1,132 +1,227 @@
 ---
 title: 'Authentication Overview'
-description: 'JWT-based authentication for Walle AVL API'
+description: 'JWT-based authentication infrastructure for Walle'
 ---
 
-## Authentication Flow
+## Authentication Infrastructure
 
-Walle uses JWT (JSON Web Token) authentication with Passport.js for securing API endpoints. The authentication system validates users against a MongoDB database and issues tokens valid for 8 hours.
+Walle provides JWT (JSON Web Token) authentication infrastructure using Passport.js. The authentication system includes strategy implementation, guards, and decorators ready to be used in your application.
 
-### Authentication Process
+<Note>
+  The authentication infrastructure is implemented, but you'll need to create your own auth controller with login/signup endpoints. The core components (JwtStrategy, JwtAuthguard, @Auth decorator) are ready to use.
+</Note>
 
-1. Client sends login credentials (username/password or DNI)
-2. Server validates credentials against user database
-3. Server issues JWT token valid for 8 hours
-4. Client includes token in subsequent requests via Bearer authentication
-5. Server validates token and retrieves user data on each request
+## Core Components
 
-## Login Endpoint
+### JwtStrategy
 
-### POST /auth/login
+The `JwtStrategy` class validates JWT tokens and retrieves user data from MongoDB:
 
-Authenticates a user and returns a JWT access token.
+```typescript
+// From src/app/auth/strategies/jwt.strategy.ts
+export class JwtStrategy extends PassportStrategy(Strategy) {
+  constructor(
+    private readonly config: ConfigService,
+    private readonly userService: UserService,
+  ) {
+    super({
+      jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
+      ignoreExpiration: false,
+      secretOrKey: config.get<string>(JWT_SECRET)
+    });
+  }
 
-<ParamField body="user_dni" type="number" required>
-  User's DNI (Document National de Identidad) used for authentication
-</ParamField>
-
-<ParamField body="user_password" type="string" required>
-  User's password
-</ParamField>
-
-#### Request Example
-
-```json
-{
-  "user_dni": 12345678,
-  "user_password": "your_password"
-}
-```
-
-#### Response
-
-<ResponseField name="access_token" type="string">
-  JWT token to be used for authenticated requests. Valid for 8 hours.
-</ResponseField>
-
-<ResponseField name="user" type="object">
-  User object containing profile information
-  
-  <ResponseField name="user_dni" type="number">
-    User's DNI
-  </ResponseField>
-  
-  <ResponseField name="user_name" type="string">
-    User's first name
-  </ResponseField>
-  
-  <ResponseField name="user_lastname" type="string">
-    User's last name
-  </ResponseField>
-  
-  <ResponseField name="user_email" type="string">
-    User's email address
-  </ResponseField>
-  
-  <ResponseField name="user_role" type="string">
-    User's role (default: "Operador")
-  </ResponseField>
-  
-  <ResponseField name="user_position" type="string">
-    User's position (default: "Empleado")
-  </ResponseField>
-</ResponseField>
-
-#### Success Response Example
-
-```json
-{
-  "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
-  "user": {
-    "user_dni": 12345678,
-    "user_name": "Juan",
-    "user_lastname": "Pérez",
-    "user_email": "juan.perez@example.com",
-    "user_role": "Operador",
-    "user_position": "Empleado",
-    "user_state": true
+  async validate(payload: any) {
+    if ('user_dni' in payload) {
+      return await this.userService.findOneDni(payload.user_dni);
+    }
+    return null;
   }
 }
 ```
 
-## Using JWT Tokens
+**Key features:**
+- Extracts JWT from Authorization header (Bearer token)
+- Validates token signature using `JWT_SECRET`
+- Rejects expired tokens
+- Looks up user by `user_dni` from token payload
+- Returns user document or null
 
-Once authenticated, include the JWT token in the `Authorization` header of subsequent requests:
+### JwtAuthguard
+
+The `JwtAuthguard` extends Passport's AuthGuard and throws exceptions for unauthorized requests:
+
+```typescript
+// From src/common/guards/jwt.guard.ts
+@Injectable()
+export class JwtAuthguard extends AuthGuard('jwt') {
+  handleRequest(err, user, info) {
+    if (err || !user) {
+      throw err || new UnauthorizedException('Unathorized!');
+    }
+    return user;
+  }
+}
+```
+
+**Behavior:**
+- Returns 401 Unauthorized if token is missing, invalid, or expired
+- Returns 401 if user lookup fails
+- Populates request.user with the User document on success
+
+### @Auth() Decorator
+
+The `@Auth()` decorator provides a convenient way to protect endpoints:
+
+```typescript
+// From src/common/decorators/auth.decorator.ts
+export function Auth() {
+  return applyDecorators(
+    UseGuards(JwtAuthguard)
+  )
+}
+```
+
+**Usage in controllers:**
+
+```typescript
+import { Controller, Get } from '@nestjs/common';
+import { Auth } from 'src/common/decorators';
+import { User as UserDecorator } from 'src/common/decorators';
+
+@Controller('protected')
+export class ProtectedController {
+  
+  @Get()
+  @Auth()  // Requires valid JWT token
+  getProtectedData(@UserDecorator() user) {
+    // user is the User document from MongoDB
+    return { 
+      message: 'Authenticated', 
+      userId: user._id,
+      dni: user.user_dni 
+    };
+  }
+}
+```
+
+## JWT Configuration
+
+JWT tokens are configured in `src/app/auth/auth.module.ts`:
+
+```typescript
+JwtModule.registerAsync({
+  inject: [ConfigService],
+  useFactory: (config: ConfigService) => ({
+    secret: config.get<string>(JWT_SECRET),
+    signOptions: {
+      expiresIn: '8h'
+    }
+  })
+})
+```
+
+**Configuration:**
+- **Secret**: Loaded from `JWT_SECRET` environment variable
+- **Expiration**: 8 hours
+- **Algorithm**: HS256 (default)
+
+### Required Environment Variable
+
+<ParamField path="JWT_SECRET" type="string" required>
+  Secret key used to sign and verify JWT tokens. Use a strong random string in production.
+</ParamField>
+
+**Example:**
+```bash
+JWT_SECRET=your-super-secret-key-min-32-characters-long
+```
+
+## Implementing Login Endpoint
+
+To use the authentication infrastructure, you'll need to create a login controller:
+
+```typescript
+import { Controller, Post, Body } from '@nestjs/common';
+import { JwtService } from '@nestjs/jwt';
+import { UserService } from './app/user/user.service';
+import * as bcrypt from 'bcrypt';
+
+@Controller('auth')
+export class AuthController {
+  constructor(
+    private readonly userService: UserService,
+    private readonly jwtService: JwtService,
+  ) {}
+
+  @Post('login')
+  async login(@Body() loginDto: { user_dni: number; password: string }) {
+    // Find user by DNI
+    const user = await this.userService.findOneDni(loginDto.user_dni);
+    
+    if (!user) {
+      throw new UnauthorizedException('Invalid credentials');
+    }
+    
+    // Verify password (user_password field from User schema)
+    const isPasswordValid = await bcrypt.compare(
+      loginDto.password, 
+      user.user_password
+    );
+    
+    if (!isPasswordValid) {
+      throw new UnauthorizedException('Invalid credentials');
+    }
+    
+    // Generate JWT token with user_dni in payload
+    const payload = { user_dni: user.user_dni };
+    const access_token = this.jwtService.sign(payload);
+    
+    return {
+      access_token,
+      expires_in: '8h',
+      user: {
+        dni: user.user_dni,
+        name: user.user_name,
+        lastname: user.user_lastname,
+        email: user.user_email,
+        role: user.user_role
+      }
+    };
+  }
+}
+```
+
+<Warning>
+  Remember to hash passwords using bcrypt before storing them in the database. The User schema stores passwords in the `user_password` field.
+</Warning>
+
+## Token Usage
+
+Include JWT tokens in requests using the Authorization header:
 
 ```bash
 Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
 ```
 
-### Example Authenticated Request
-
+**Example request:**
 ```bash
-curl -X GET https://api.walle.com/points \
-  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+curl -X GET http://localhost:3700/your-endpoint \
+  -H "Authorization: Bearer YOUR_JWT_TOKEN"
 ```
 
-### Using the @Auth() Decorator
-
-Protected endpoints in Walle use the `@Auth()` decorator from `src/common/decorators/auth.decorator.ts:4`:
-
-```typescript
-import { Auth } from 'src/common/decorators';
-
-@Controller('protected')
-export class ProtectedController {
-  @Get()
-  @Auth()  // Requires JWT authentication
-  getProtectedData() {
-    return { message: 'This is protected data' };
-  }
-}
-```
-
-## Error Responses
+## Error Handling
 
 ### 401 Unauthorized
 
-Returned when authentication fails or token is invalid/missing.
+The `JwtAuthguard` throws `UnauthorizedException` when:
 
+- Authorization header is missing
+- Token is malformed or invalid signature
+- Token has expired (>8 hours)
+- User lookup by `user_dni` returns null
+
+**Error response:**
 ```json
 {
   "statusCode": 401,
@@ -135,43 +230,69 @@ Returned when authentication fails or token is invalid/missing.
 }
 ```
 
-**Common causes:**
-- Missing or malformed Authorization header
-- Expired JWT token (>8 hours old)
-- Invalid token signature
-- User not found in database
-- Token payload missing `user_dni` field
+## User Validation
 
-### 400 Bad Request
+The JWT payload must contain `user_dni` field. The `JwtStrategy.validate()` method:
 
-Returned when login credentials are invalid or missing.
+1. Checks if payload contains `user_dni`
+2. Calls `UserService.findOneDni(payload.user_dni)`
+3. Returns User document if found, null otherwise
+4. JwtAuthguard throws 401 if user is null
 
-```json
-{
-  "statusCode": 400,
-  "message": "Invalid credentials",
-  "error": "Bad Request"
+**User lookup from `src/app/user/user.service.ts`:**
+```typescript
+async findOneDni(dni: number): Promise<UserDocument | null> {
+  return this.userModel.findOne({ user_dni: dni }).exec();
 }
 ```
 
-## Token Configuration
+## Security Best Practices
 
-JWT tokens are configured in `src/app/auth/auth.module.ts:12-19` with:
+<Accordion title="Token Storage">
+  Store JWT tokens securely:
+  - Use httpOnly cookies for web applications
+  - Use secure storage APIs for mobile apps
+  - Never store tokens in localStorage if you handle sensitive data
+</Accordion>
 
-- **Secret Key**: Loaded from `JWT_SECRET` environment variable
-- **Expiration**: 8 hours (`expiresIn: '8h'`)
-- **Algorithm**: HS256 (default)
+<Accordion title="Secret Key Security">
+  Protect your JWT_SECRET:
+  - Use a strong random string (minimum 32 characters)
+  - Never commit secrets to version control
+  - Rotate secrets periodically
+  - Use different secrets for dev/staging/production
+</Accordion>
 
-### Environment Variables
+<Accordion title="HTTPS Required">
+  Always use HTTPS in production:
+  - JWT tokens in Authorization headers are sent with every request
+  - HTTPS prevents token interception
+  - Configure CORS properly for browser-based clients
+</Accordion>
 
-<ParamField path="JWT_SECRET" type="string" required>
-  Secret key used to sign and verify JWT tokens. Must be set in environment configuration.
-</ParamField>
+<Accordion title="Token Expiration">
+  The 8-hour expiration requires:
+  - Implement token refresh logic for long-lived sessions
+  - Handle 401 errors gracefully in your client
+  - Prompt users to re-authenticate when tokens expire
+</Accordion>
 
-## Security Considerations
+## Next Steps
 
-- Store JWT tokens securely (e.g., httpOnly cookies or secure storage)
-- Never expose JWT_SECRET in client-side code
-- Tokens expire after 8 hours - implement token refresh logic
-- HTTPS is required for production deployments
-- User lookup is performed on every authenticated request by DNI
+<CardGroup cols={2}>
+  <Card title="JWT Strategy" icon="shield" href="/api/auth/jwt-strategy">
+    Deep dive into JwtStrategy implementation
+  </Card>
+  
+  <Card title="User Service" icon="users" href="/api/users/service">
+    Learn about user lookup and management
+  </Card>
+  
+  <Card title="User Schema" icon="database" href="/api/users/overview">
+    Explore the complete User model
+  </Card>
+  
+  <Card title="Environment Config" icon="gear" href="/guides/environment-configuration">
+    Configure JWT_SECRET and other variables
+  </Card>
+</CardGroup>

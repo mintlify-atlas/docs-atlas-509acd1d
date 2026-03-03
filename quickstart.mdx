@@ -204,78 +204,89 @@ Check the console output to confirm successful startup:
 [Nest] 12345  - 03/03/2026, 10:30:02 AM     LOG [NestApplication] Nest application successfully started
 ```
 
-## Making Your First API Call
+## Using the Service Layer
+
+Walle provides a complete backend infrastructure with services, models, and partition management. The HTTP API layer (controllers with endpoints) is not yet implemented, but you can use the services directly in your NestJS application.
 
 <Steps>
-  <Step title="Authenticate and get JWT token">
-    First, you need to authenticate to receive a JWT token. The authentication uses the `JwtStrategy` defined in `src/app/auth/strategies/jwt.strategy.ts`:
+  <Step title="Inject and use PointsService">
+    The `PointsService` provides access to the partitioned Point repository. Here's how to use it in your own controller or service:
     
-    ```bash
-    curl -X POST http://localhost:3700/auth/login \
-      -H "Content-Type: application/json" \
-      -d '{
-        "user_dni": 12345678,
-        "password": "your_password"
-      }'
-    ```
+    ```typescript
+    import { Injectable } from '@nestjs/common';
+    import { PointsService } from './app/points/points.service';
+    import { Point } from './app/points/model/point.model';
     
-    Response:
-    ```json
-    {
-      "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
-      "expires_in": "8h"
+    @Injectable()
+    export class YourService {
+      constructor(private readonly pointsService: PointsService) {}
+      
+      async createPoint(pointData: Partial<Point>) {
+        // The PointsService has access to the TypeORM repository
+        // You can extend it with your own methods
+        const point = await this.pointsService.pointsRepository.save({
+          timestamp: Date.now(),
+          trackerDeviceImei: 123456789012345,
+          trackerDeviceLatitude: -12.0464,
+          trackerDeviceLongitude: -77.0428,
+          ...pointData
+        });
+        return point;
+      }
     }
     ```
     
     <Note>
-      JWT tokens expire after 8 hours as configured in `src/app/auth/auth.module.ts:17`. The token is validated against the user's DNI using `UserService.findOneDni()` from `src/app/auth/strategies/jwt.strategy.ts:24`.
+      The `PointsService` is defined in `src/app/points/points.service.ts` and provides the TypeORM repository for the Point entity. You'll need to add your own business logic methods.
     </Note>
   </Step>
 
-  <Step title="Query tracking points">
-    Use the JWT token to access protected endpoints:
+  <Step title="Work with the Point model">
+    The Point entity includes 50+ fields for complete vehicle telemetry tracking (defined in `src/app/points/model/point.model.ts`):
     
-    ```bash
-    curl http://localhost:3700/points \
-      -H "Authorization: Bearer YOUR_JWT_TOKEN_HERE"
-    ```
+    **Required fields:**
+    - `id` - UUID (auto-generated)
+    - `timestamp` - Unix timestamp in milliseconds (bigint)
+    - `trackerDeviceImei` - Device IMEI number
+    - `trackerDeviceLatitude` - GPS latitude
+    - `trackerDeviceLongitude` - GPS longitude
     
-    <Note>
-      The Points controller is defined in `src/app/points/points.controller.ts`. While the basic structure is in place, you may need to implement specific endpoints based on your requirements.
-    </Note>
-  </Step>
-
-  <Step title="Create a tracking point">
-    Insert a new vehicle telemetry point:
-    
-    ```bash
-    curl -X POST http://localhost:3700/points \
-      -H "Authorization: Bearer YOUR_JWT_TOKEN_HERE" \
-      -H "Content-Type: application/json" \
-      -d '{
-        "timestamp": 1709467200000,
-        "trackerDeviceImei": 123456789012345,
-        "trackerDeviceLicensePlate": "ABC-123",
-        "trackerDeviceLatitude": -12.0464,
-        "trackerDeviceLongitude": -77.0428,
-        "trackerDeviceAltitude": 154.0,
-        "trackerDeviceSpeedKh": 45.5,
-        "trackerDeviceMovement": true,
-        "trackerDeviceIgnition": true
-      }'
-    ```
-    
-    The Point entity includes 50+ fields as defined in `src/app/points/model/point.model.ts`. Key fields include:
-    
-    - **Required**: `timestamp`, `trackerDeviceImei`, `trackerDeviceLatitude`, `trackerDeviceLongitude`
-    - **Geospatial**: `location` (PostGIS Point geometry with SRID 4326)
-    - **Movement**: `trackerDeviceSpeedMs`, `trackerDeviceSpeedKh`, `trackerDeviceAngle`, `trackerDeviceMovement`
-    - **Engine**: `trackerDeviceIgnition`, `trackerDeviceEngineHours`, `trackerDeviceFuelConsumedPerDay`
-    - **GNSS**: `trackerDeviceNumberOfSatellites`, `trackerDeviceGnssPdop`, `trackerDeviceGnssHdop`
+    **Optional tracking fields:**
+    - `location` - PostGIS Point geometry (SRID 4326)
+    - `trackerDeviceSpeedKh` - Speed in km/h
+    - `trackerDeviceAngle` - Direction angle
+    - `trackerDeviceIgnition` - Engine on/off state
+    - `trackerDeviceNumberOfSatellites` - GNSS satellite count
     
     <Warning>
-      The Point model uses a composite primary key of `(id, timestamp)` as required by PostgreSQL range partitioning. See `src/app/points/model/point.model.ts:6-16` for details.
+      The Point model uses a composite primary key `(id, timestamp)` required by PostgreSQL range partitioning. Both fields must be provided when creating records.
     </Warning>
+  </Step>
+
+  <Step title="Use authentication infrastructure">
+    Walle includes JWT authentication infrastructure using `JwtStrategy` and `JwtAuthguard`:
+    
+    ```typescript
+    import { Controller, Get } from '@nestjs/common';
+    import { Auth } from './common/decorators/auth.decorator';
+    import { User } from './common/decorators/user.decorator';
+    
+    @Controller('your-endpoint')
+    export class YourController {
+      
+      @Get()
+      @Auth()  // Apply JWT authentication guard
+      async protectedRoute(@User() user) {
+        // user is populated by JwtStrategy.validate()
+        // which looks up the user by user_dni from the JWT payload
+        return { message: 'Authenticated', userId: user._id };
+      }
+    }
+    ```
+    
+    <Info>
+      The `@Auth()` decorator (from `src/common/decorators/auth.decorator.ts`) applies the `JwtAuthguard`, which validates JWT tokens and populates the user via `JwtStrategy.validate()` from `src/app/auth/strategies/jwt.strategy.ts`.
+    </Info>
   </Step>
 </Steps>
 
