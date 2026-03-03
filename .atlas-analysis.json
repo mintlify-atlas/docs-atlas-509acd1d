@@ -1,0 +1,93 @@
+{
+  "projectType": "api-service",
+  "projectName": "Walle",
+  "projectDescription": "AVL telemetry tracking API service with time-series partitioning for vehicle GPS data",
+  "theme": "aspen",
+  "primaryColor": "#1e40af",
+  "lightColor": "#3b82f6",
+  "darkColor": "#1e3a8a",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/architecture",
+              "concepts/database-partitioning",
+              "concepts/authentication"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/setup",
+              "guides/environment-configuration",
+              "guides/partition-management"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Authentication",
+            "pages": [
+              "api/auth/overview",
+              "api/auth/jwt-strategy"
+            ]
+          },
+          {
+            "group": "Points",
+            "pages": [
+              "api/points/overview",
+              "api/points/model",
+              "api/points/service"
+            ]
+          },
+          {
+            "group": "Users",
+            "pages": [
+              "api/users/overview",
+              "api/users/service"
+            ]
+          },
+          {
+            "group": "Database",
+            "pages": [
+              "api/database/configuration",
+              "api/database/partition-manager"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Time-series partitioned PostgreSQL for high-volume telemetry data",
+    "JWT-based authentication with Passport",
+    "Multi-database architecture (PostgreSQL + MongoDB)",
+    "Automated daily partition management with scheduled jobs",
+    "Comprehensive vehicle tracking data model with 50+ attributes",
+    "PostGIS geospatial indexing for location queries"
+  ],
+  "publicApiSurface": [
+    "POST /auth/login - Authenticate user and receive JWT token",
+    "GET /points - Query vehicle tracking points",
+    "POST /points - Create new tracking point",
+    "PartitionManagerService.createPartitionForDate() - Create daily partition",
+    "PartitionManagerService.dropPartitionDaysAgo() - Remove old partition",
+    "PointsService - Service layer for points CRUD operations",
+    "UserService.findOneDni() - Find user by DNI",
+    "JwtStrategy - JWT authentication strategy"
+  ]
+}
